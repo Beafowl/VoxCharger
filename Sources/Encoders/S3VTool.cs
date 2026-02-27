@@ -14,16 +14,12 @@ namespace VoxCharger
             if (!File.Exists(ConverterFileName))
                 throw new FileNotFoundException($"{ConverterFileName} not found", ConverterFileName);
 
-            /*
-             * TODO: DO NOT USE! Original .s3v (.asf) file seems encoded by Windows Media Audio Pro 10 encoder with close to Lossless quality.
-             *       FFMPEG doesn't support this, and thus, this will generate non-working audio file for the game
-             *
-             * Format: 256000 Bit Rate with 44100 Sample Rate 24 Bit depth @ 2 Channels
-             */
+            // Official .s3v files use WMA Pro 10 (wmapro) in ASF container.
+            // ffmpeg cannot encode wmapro, so we use wmav2 as the closest available codec.
             string previewArgs = "";
             if (opt.IsPreview)
-                previewArgs = $"-ss {opt.PreviewOffset / 60:00}:{opt.PreviewOffset % 60:00} -t 10 -af afade=t=in:st={opt.PreviewOffset}:d=1,afade=t=out:st={opt.PreviewOffset + 9}:d=1";
-            string args = $"-y -i \"{inputFileName}\" {previewArgs} -maxrate 297k -minrate 297k -bufsize 297 -vb 280k -ab 380k -ac 2 -ar 44100 -f asf \"{outputFileName}\"";
+                previewArgs = $"-ss {opt.PreviewOffset / 60:00}:{opt.PreviewOffset % 60:00} -t 10 -af afade=t=in:st=0:d=1,afade=t=out:st=9:d=1";
+            string args = $"-y -i \"{inputFileName}\" {previewArgs} -c:a wmav2 -b:a 384k -ac 2 -ar 44100 -f asf \"{outputFileName}\"";
 
             var info = new ProcessStartInfo()
             {
@@ -38,15 +34,18 @@ namespace VoxCharger
 
             using (var process = Process.Start(info))
             {
+                // Read streams before WaitForExit to avoid deadlock when output buffer fills
+                string stdOut = process.StandardOutput.ReadToEnd();
+                string stdErr = process.StandardError.ReadToEnd();
                 process.WaitForExit();
+
                 if (process.ExitCode != 0)
                 {
-                    int exitCode  = process.ExitCode;
-                    string stdout = (process.StandardOutput.ReadToEnd() + ' ' +  process.StandardError.ReadToEnd().Trim()).Trim();
-                    if (string.IsNullOrEmpty(stdout))
-                        stdout = "Unknown error.";
+                    string output = (stdOut + ' ' + stdErr).Trim();
+                    if (string.IsNullOrEmpty(output))
+                        output = "Unknown error.";
 
-                    throw new ApplicationException($"{Path.GetFileName(ConverterFileName)} execution failed.\n({exitCode}): {stdout}");
+                    throw new ApplicationException($"{Path.GetFileName(ConverterFileName)} execution failed.\n({process.ExitCode}): {output}");
                 }
             }
         }

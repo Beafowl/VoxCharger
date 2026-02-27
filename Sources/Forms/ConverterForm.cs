@@ -15,7 +15,9 @@ namespace VoxCharger
         Converter = 0,
         Importer  = 1,
         BulkConverter = 2,
-        BulkImporter  = 3
+        BulkImporter  = 3,
+        ReverseConverter     = 4,
+        BulkReverseConverter = 5
     }
 
     public partial class ConverterForm : Form
@@ -157,6 +159,29 @@ namespace VoxCharger
 
                 return;
             }
+            else if (_mode == ConvertMode.ReverseConverter || _mode == ConvertMode.BulkReverseConverter)
+            {
+                MusicCodeLabel.Visible     = false;
+                InfVerLabel.Visible        = false;
+                BackgroundLabel.Visible    = false;
+                BackgroundDropDown.Enabled = BackgroundDropDown.Visible = false;
+                MusicGroupBox.Enabled      = MusicGroupBox.Visible      = false;
+                LevelGroupBox.Enabled      = LevelGroupBox.Visible      = false;
+                AsciiTextBox.Enabled       = AsciiTextBox.Visible       = false;
+                AsciiAutoCheckBox.Enabled  = AsciiAutoCheckBox.Visible  = false;
+                VersionDropDown.Enabled    = VersionDropDown.Visible    = false;
+                InfVerDropDown.Enabled     = InfVerDropDown.Visible     = false;
+                OptionsGroupBox.Enabled    = OptionsGroupBox.Visible    = false;
+
+                int componentHeight      = AsciiTextBox.Height + VersionDropDown.Height + BackgroundDropDown.Height;
+                Height                  -= LevelGroupBox.Height + componentHeight + MusicGroupBox.Height + OptionsGroupBox.Height;
+
+                Text = "VOX to KSH Converter";
+                ProcessConvertButton.Text = "Convert";
+                PathTextBox.Text = _target;
+
+                return;
+            }
             else if (_mode == ConvertMode.BulkImporter)
             {
                 MusicCodeLabel.Visible     = false;
@@ -165,10 +190,40 @@ namespace VoxCharger
                 AsciiAutoCheckBox.Enabled  = AsciiAutoCheckBox.Visible  = false;
                 MusicGroupBox.Enabled      = MusicGroupBox.Visible      = false;
 
-                int componentHeight      = AsciiTextBox.Height;
+                // Show starting music ID controls for bulk import
+                StartingIdLabel.Text             = "Starting ID";
+                StartingIdLabel.Visible          = true;
+                StartingIdNumericUpDown.Visible  = true;
+                StartingIdNumericUpDown.Value     = AssetManager.GetNextMusicId();
+
                 OptionsGroupBox.Location = LevelGroupBox.Location;
-                OptionsGroupBox.Height  -= componentHeight;
-                Height                  -= LevelGroupBox.Height + MusicGroupBox.Height + componentHeight;
+                Height                  -= LevelGroupBox.Height + MusicGroupBox.Height;
+            }
+
+            if (_mode == ConvertMode.Importer)
+            {
+                // Show music ID control for single import
+                StartingIdLabel.Text             = "Music ID";
+                StartingIdLabel.Visible          = true;
+                StartingIdNumericUpDown.Visible  = true;
+                StartingIdNumericUpDown.Value     = AssetManager.GetNextMusicId();
+
+                // Move ID controls below the Music Code row
+                int rowHeight = AsciiTextBox.Height + 3;
+                StartingIdLabel.Top          = MusicCodeLabel.Top + rowHeight;
+                StartingIdNumericUpDown.Top  = AsciiTextBox.Top + rowHeight;
+
+                // Shift Version, Background, and Offset rows down to make room
+                InfVerLabel.Top            += rowHeight;
+                VersionDropDown.Top        += rowHeight;
+                InfVerDropDown.Top         += rowHeight;
+                BackgroundLabel.Top        += rowHeight;
+                BackgroundDropDown.Top     += rowHeight;
+                MeasureLabel.Top           += rowHeight;
+                RealignOffsetCheckBox.Top  += rowHeight;
+
+                OptionsGroupBox.Height     += rowHeight;
+                Height                     += rowHeight;
             }
 
             MusicGroupBox.Anchor = AnchorStyles.Top | AnchorStyles.Left;
@@ -178,7 +233,7 @@ namespace VoxCharger
 
             PathTextBox.Text                 = _target;
             BackgroundDropDown.SelectedItem  = LastBackground;
-            VersionDropDown.SelectedIndex    = 5;
+            VersionDropDown.SelectedIndex    = 6;
             InfVerDropDown.SelectedIndex     = 0;
             ProcessConvertButton.Text        = "Add";
         }
@@ -195,6 +250,7 @@ namespace VoxCharger
  
                 Result       = main.ToHeader();
                 Result.Id    = AssetManager.GetNextMusicId();
+                StartingIdNumericUpDown.Value = Result.Id;
                 Result.Ascii = _defaultAscii = AsciiTextBox.Text = Path.GetFileName(Path.GetDirectoryName(_target));
                 _exporter     = new Ksh.Exporter(main);
 
@@ -209,6 +265,16 @@ namespace VoxCharger
                 _defaultAscii = AsciiTextBox.Text = Result.Ascii;
                 _charts[main.Difficulty] = new ChartInfo(main, main.ToLevelHeader(), _target);
                 LoadJacket(_charts[main.Difficulty]);
+
+                // Pre-populate preview offset from KSH
+                if (main.PreviewOffset > 0)
+                {
+                    int totalSeconds = main.PreviewOffset / 1000;
+                    int minutes = Math.Min(totalSeconds / 60, 10);
+                    int seconds = minutes >= 10 ? 0 : totalSeconds % 60;
+                    var baseTime = PreviewTimePicker.Value;
+                    PreviewTimePicker.Value = new DateTime(baseTime.Year, baseTime.Month, baseTime.Day, baseTime.Hour, minutes, seconds);
+                }
 
                 // Try to locate another difficulty
                 foreach (var lv in Ksh.Exporter.GetCharts(Path.GetDirectoryName(_target), main.Title))
@@ -455,19 +521,22 @@ namespace VoxCharger
             // Act as converter
             switch (_mode)
             {
-                case ConvertMode.Converter:     SingleConvert(); break;
-                case ConvertMode.BulkConverter: BulkConvert();   break;
-                case ConvertMode.Importer:      SingleImport();  break;
-                case ConvertMode.BulkImporter:  BulkImport();    break;
+                case ConvertMode.Converter:            SingleConvert();        break;
+                case ConvertMode.BulkConverter:         BulkConvert();          break;
+                case ConvertMode.Importer:              SingleImport();         break;
+                case ConvertMode.BulkImporter:          BulkImport();           break;
+                case ConvertMode.ReverseConverter:      SingleReverseConvert(); break;
+                case ConvertMode.BulkReverseConverter:  BulkReverseConvert();   break;
             }
         }
 
         private void SingleImport()
         {
 
-            try 
-            { 
+            try
+            {
                 // Assign metadata
+                Result.Id           = (int)StartingIdNumericUpDown.Value;
                 Result.Ascii        = AsciiTextBox.Text;
                 Result.BackgroundId = short.Parse((BackgroundDropDown.SelectedItem ?? "0").ToString().Split(' ')[0]);
                 Result.Version      = (GameVersion)(VersionDropDown.SelectedIndex + 1);
@@ -563,7 +632,7 @@ namespace VoxCharger
                             ksh.Parse(fn, Options);
 
                             var header          = ksh.ToHeader();
-                            header.Id           = AssetManager.GetNextMusicId() + current++;
+                            header.Id           = (int)StartingIdNumericUpDown.Value + current++;
                             header.BackgroundId = short.Parse((BackgroundDropDown.SelectedItem ?? "0").ToString().Split(' ')[0]);
                             header.Version      = (GameVersion)(VersionDropDown.SelectedIndex + 1);
                             header.InfVersion   = InfVerDropDown.SelectedIndex == 0 ? InfiniteVersion.Mxm : (InfiniteVersion)(InfVerDropDown.SelectedIndex + 1);
@@ -709,6 +778,129 @@ namespace VoxCharger
                                 catch (Exception ex)
                                 {
                                     string err = $"Failed attempt to convert ksh file: {Path.GetFileName(fn)} ({ex.Message})";
+                                    errors.Add(err);
+                                    Debug.WriteLine(err);
+                                }
+                            }
+                        }
+
+                        dialog.Complete();
+                    });
+
+                    loader.ShowDialog();
+                }
+            }
+
+            if (errors.Count == 0)
+            {
+                MessageBox.Show(
+                    "Chart has been converted successfully",
+                    "Information",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+            }
+            else
+            {
+                string message = "Failed to convert one or more charts:";
+                foreach (string err in errors)
+                    message += $"\n{err}";
+
+                MessageBox.Show(
+                   message,
+                   "Error",
+                   MessageBoxButtons.OK,
+                   MessageBoxIcon.Warning
+               );
+            }
+
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+
+        private void SingleReverseConvert()
+        {
+            try
+            {
+                using (var browser = new SaveFileDialog())
+                {
+                    browser.Filter = "KShoot Mania Chart|*.ksh|All Files|*.*";
+                    if (browser.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    var vox = new VoxChart();
+                    vox.Parse(_target);
+
+                    var ksh = new Ksh();
+                    ksh.Import(vox);
+                    ksh.Serialize(browser.FileName);
+
+                    MessageBox.Show(
+                        "Chart has been converted successfully",
+                        "Information",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                   $"Failed to convert vox chart.\n{ex.Message}",
+                   "Error",
+                   MessageBoxButtons.OK,
+                   MessageBoxIcon.Error
+                );
+            }
+        }
+
+        private void BulkReverseConvert()
+        {
+            var errors = new List<string>();
+            using (var browser = new CommonOpenFileDialog())
+            {
+                browser.IsFolderPicker = true;
+                browser.Multiselect    = false;
+
+                if (browser.ShowDialog() != CommonFileDialogResult.Ok)
+                    return;
+
+                string outputDir = browser.FileName;
+                using (var loader = new LoadingForm())
+                {
+                    loader.SetAction(dialog =>
+                    {
+                        var directories = Directory.GetDirectories(_target);
+                        int progress = 0;
+                        foreach (string dir in directories)
+                        {
+                            dialog.SetStatus($"Processing {Path.GetFileName(dir)}..");
+                            dialog.SetProgress((progress++ / (float)directories.Length) * 100f);
+                            foreach (var fn in Directory.GetFiles(dir, "*.vox"))
+                            {
+                                try
+                                {
+                                    string path = Path.Combine(
+                                        $"{outputDir}",
+                                        $"{Path.GetFileName(dir)}\\"
+                                    );
+
+                                    Directory.CreateDirectory(path);
+                                    string output = Path.Combine(path, Path.GetFileName(fn.Replace(".vox", ".ksh")));
+
+                                    var vox = new VoxChart();
+                                    vox.Parse(fn);
+
+                                    var ksh = new Ksh();
+                                    ksh.Import(vox);
+                                    ksh.Serialize(output);
+                                }
+                                catch (Exception ex)
+                                {
+                                    string err = $"Failed attempt to convert vox file: {Path.GetFileName(fn)} ({ex.Message})";
                                     errors.Add(err);
                                     Debug.WriteLine(err);
                                 }

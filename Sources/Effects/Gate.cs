@@ -73,14 +73,16 @@ namespace VoxCharger
             {
                 var gate = new Gate();
 
-                try 
-                { 
-                    if (!definition.GetValue("mix", out float mix) || !definition.GetValue("waveLength", out int waveLength))
-                        return gate;
+                try
+                {
+                    definition.GetValue("mix",        out float mix);
+                    definition.GetValue("waveLength", out int waveLength);
+                    definition.GetValue("rate",       out float rate);
 
-                    gate.Mix    = mix;
-                    gate.Length = waveLength / 2;
-                    gate.Rate   = 1.00f;
+                    // KSH percentages are normalized (0.0-1.0), VOX expects 0-100 scale
+                    gate.Mix    = mix > 0 ? mix * 100f : 98.00f;
+                    gate.Length = waveLength > 0 ? waveLength / 2 : 8;
+                    gate.Rate   = rate > 0 ? rate : 1.00f;
                     gate.Type   = FxType.Gate;
                 }
                 catch (Exception)
@@ -97,6 +99,15 @@ namespace VoxCharger
                     return base.ToString();
 
                 return $"{(int)Type},\t{Mix:0.00},\t{Length},\t{Rate:0.00}";
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                int kshWaveLength = Length * 2;
+                return $"Gate;{kshWaveLength}";
             }
         }
 

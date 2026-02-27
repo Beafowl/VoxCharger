@@ -85,7 +85,10 @@ namespace VoxCharger
             this.CameraEffectsGroupBox.SuspendLayout();
             this.TracksGroupBox.SuspendLayout();
             this.SoundEffectGroupBox.SuspendLayout();
+            this.StartingIdLabel = new System.Windows.Forms.Label();
+            this.StartingIdNumericUpDown = new System.Windows.Forms.NumericUpDown();
             this.MusicGroupBox.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.StartingIdNumericUpDown)).BeginInit();
             this.SuspendLayout();
             // 
             // LevelGroupBox
@@ -218,6 +221,8 @@ namespace VoxCharger
             this.OptionsGroupBox.Controls.Add(this.MeasureLabel);
             this.OptionsGroupBox.Controls.Add(this.AsciiTextBox);
             this.OptionsGroupBox.Controls.Add(this.MusicCodeLabel);
+            this.OptionsGroupBox.Controls.Add(this.StartingIdLabel);
+            this.OptionsGroupBox.Controls.Add(this.StartingIdNumericUpDown);
             this.OptionsGroupBox.Location = new System.Drawing.Point(12, 215);
             this.OptionsGroupBox.Name = "OptionsGroupBox";
             this.OptionsGroupBox.Size = new System.Drawing.Size(447, 372);
@@ -439,7 +444,7 @@ namespace VoxCharger
             this.VersionDropDown.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.VersionDropDown.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.VersionDropDown.FormattingEnabled = true;
-            this.VersionDropDown.Items.AddRange(new object[] { "Sound Voltex: Booth", "Sound Voltex II: Infinite Infection", "Sound Voltex III: Gravity Wars", "Sound Voltex IV: Heavenly Haven", "Sound Voltex V: Vivid Wave", "Sound Voltex VI: Exceed Gear" });
+            this.VersionDropDown.Items.AddRange(new object[] { "Sound Voltex: Booth", "Sound Voltex II: Infinite Infection", "Sound Voltex III: Gravity Wars", "Sound Voltex IV: Heavenly Haven", "Sound Voltex V: Vivid Wave", "Sound Voltex VI: Exceed Gear", "Sound Voltex VII: Nabla" });
             this.VersionDropDown.Location = new System.Drawing.Point(90, 42);
             this.VersionDropDown.Name = "VersionDropDown";
             this.VersionDropDown.Size = new System.Drawing.Size(247, 21);
@@ -628,9 +633,30 @@ namespace VoxCharger
             this.PreviewOffsetLabel.TabIndex = 8;
             this.PreviewOffsetLabel.Text = "Preview TimeStamp";
             this.PreviewOffsetLabel.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
-            // 
+            //
+            // StartingIdLabel
+            //
+            this.StartingIdLabel.Location = new System.Drawing.Point(10, 19);
+            this.StartingIdLabel.Name = "StartingIdLabel";
+            this.StartingIdLabel.Size = new System.Drawing.Size(74, 20);
+            this.StartingIdLabel.TabIndex = 11;
+            this.StartingIdLabel.Text = "Starting ID";
+            this.StartingIdLabel.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
+            this.StartingIdLabel.Visible = false;
+            //
+            // StartingIdNumericUpDown
+            //
+            this.StartingIdNumericUpDown.Location = new System.Drawing.Point(90, 20);
+            this.StartingIdNumericUpDown.Maximum = new decimal(new int[] { 999999, 0, 0, 0 });
+            this.StartingIdNumericUpDown.Minimum = new decimal(new int[] { 1, 0, 0, 0 });
+            this.StartingIdNumericUpDown.Name = "StartingIdNumericUpDown";
+            this.StartingIdNumericUpDown.Size = new System.Drawing.Size(349, 20);
+            this.StartingIdNumericUpDown.TabIndex = 12;
+            this.StartingIdNumericUpDown.Value = new decimal(new int[] { 1, 0, 0, 0 });
+            this.StartingIdNumericUpDown.Visible = false;
+            //
             // ConverterForm
-            // 
+            //
             this.AcceptButton = this.ProcessConvertButton;
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
@@ -664,6 +690,7 @@ namespace VoxCharger
             this.TracksGroupBox.PerformLayout();
             this.SoundEffectGroupBox.ResumeLayout(false);
             this.MusicGroupBox.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.StartingIdNumericUpDown)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
         }
@@ -727,5 +754,7 @@ namespace VoxCharger
         private System.Windows.Forms.ComboBox InfVerDropDown;
         private System.Windows.Forms.ComboBox VersionDropDown;
         private System.Windows.Forms.Label TargetLabel;
+        private System.Windows.Forms.Label StartingIdLabel;
+        private System.Windows.Forms.NumericUpDown StartingIdNumericUpDown;
     }
 }

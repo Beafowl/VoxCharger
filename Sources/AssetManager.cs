@@ -186,7 +186,9 @@ namespace VoxCharger
             if (!File.Exists(source))
                 throw new FileNotFoundException($"{source} not found", source);
 
-            ImportAudio(source, GetAudioPath(header, opt.Format, opt.IsPreview), opt);
+            // Preview audio must be S3V format for the game to play it
+            var format = opt.IsPreview ? AudioFormat.S3V : opt.Format;
+            ImportAudio(source, GetAudioPath(header, format, opt.IsPreview), opt);
         }
 
         public static void ImportAudio(string source, VoxHeader header, Difficulty difficulty, AudioImportOptions opt = null)
@@ -205,21 +207,42 @@ namespace VoxCharger
             if (!source.ToLower().EndsWith(".2dx") && !source.EndsWith(".s3v") && !source.EndsWith(".asf"))
             {
                 if (output.EndsWith(".s3v"))
-                    throw new NotSupportedException("S3V Encoder is not supported (yet).");
+                {
+                    // Encode S3V file using ffmpeg (used for preview audio)
+                    // Fall back to 2dx if ffmpeg is not available
+                    if (FindExecutable(S3VTool.ConverterFileName) != null)
+                    {
+                        S3VTool.ConverterFileName = FindExecutable(S3VTool.ConverterFileName);
+                        S3VTool.Convert(source, output, opt);
 
-                // Encode 2dx file
-                DxEncoder.Encode(new[] { source }, output, opt);
+                        // Remove conflicting 2dx file
+                        string dxFile = Path.ChangeExtension(output, ".2dx");
+                        if (File.Exists(dxFile))
+                            File.Delete(dxFile);
+                    }
+                    else
+                    {
+                        // Fallback: encode as 2dx if ffmpeg not found
+                        output = Path.ChangeExtension(output, ".2dx");
+                        DxEncoder.Encode(new[] { source }, output, opt);
+                    }
+                }
+                else
+                {
+                    // Encode 2dx file
+                    DxEncoder.Encode(new[] { source }, output, opt);
 
-                // Remove conflicting file, in case s3v file is exists before hand
-                string s3VFile = Path.ChangeExtension(output, ".s3v");
-                if (File.Exists(s3VFile))
-                    File.Delete(s3VFile);
+                    // Remove conflicting file, in case s3v file is exists before hand
+                    string s3VFile = Path.ChangeExtension(output, ".s3v");
+                    if (File.Exists(s3VFile))
+                        File.Delete(s3VFile);
+                }
             }
             else
             {
                 if (source.EndsWith(".asf"))
                     output = $"{output.Substring(0, output.Length - 4)}.s3v";
-                
+
                 File.Copy(source, output);
             }
         }
@@ -417,7 +440,22 @@ namespace VoxCharger
 
         #region --- Utilities ---
 
-        
+        private static string FindExecutable(string fileName)
+        {
+            if (File.Exists(fileName))
+                return Path.GetFullPath(fileName);
+
+            var paths = Environment.GetEnvironmentVariable("PATH")?.Split(';') ?? new string[0];
+            foreach (var dir in paths)
+            {
+                string full = Path.Combine(dir.Trim(), fileName);
+                if (File.Exists(full))
+                    return full;
+            }
+
+            return null;
+        }
+
         #endregion
     }
 }

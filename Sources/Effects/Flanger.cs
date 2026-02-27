@@ -61,28 +61,27 @@ namespace VoxCharger
                 return new Phaser(80.00f, 2.00f, 0.50f, 90, 2.00f);
             }
 
-            public new static Flanger FromKsh(KshDefinition definition)
+            // KSH Flanger maps to VOX Phaser (FxType 3)
+            public new static Phaser FromKsh(KshDefinition definition)
             {
-                var flanger = new Flanger();
-
-                try 
+                try
                 {
-                    definition.GetValue("mix",    out float mix);
-                    definition.GetValue("depth",  out int depth);
-                    definition.GetValue("period", out float period);
+                    definition.GetValue("volume",      out float volume);
+                    definition.GetValue("period",      out float period);
+                    definition.GetValue("feedback",    out float feedback);
+                    definition.GetValue("stereoWidth", out int stereoWidth);
 
-                    flanger.Mix     = mix;
-                    flanger.Samples = int.TryParse(definition.Value, out int samples) ? samples * 10 : 0;
-                    flanger.Depth   = depth;
-                    flanger.Period  = period;
-                    flanger.Type    = FxType.Flanger;
+                    // KSH percentages are normalized (0.0-1.0), VOX expects 0-100 scale
+                    float mix = volume > 0 ? volume * 100f : 80.00f;
+                    float phaserPeriod = period > 0 ? period * 2.67f : 2.00f;
+                    float fb = feedback > 0 ? feedback : 0.50f;
+
+                    return new Phaser(mix, phaserPeriod, fb, stereoWidth > 0 ? stereoWidth : 90, 2.00f);
                 }
                 catch (Exception)
                 {
-                    flanger.Type = FxType.None;
+                    return new Phaser(80.00f, 2.00f, 0.50f, 90, 2.00f);
                 }
-
-                return flanger;
             }
 
             public override string ToString()
@@ -95,6 +94,14 @@ namespace VoxCharger
                        $"\t{Samples:0.00}," +
                        $"\t{Depth:0.00},"   +
                        $"\t{Period:0.00}";
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                return "Flanger";
             }
         }
 

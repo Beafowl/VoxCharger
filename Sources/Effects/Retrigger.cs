@@ -81,14 +81,14 @@ namespace VoxCharger
                     feedback = float.TryParse(prop[2], out feedback) ? feedback : defaultFeedback;
 
                 retrigger.WaveLength   = (int)(waveLength / 2);
-                retrigger.Mix          = 100.0f;
+                retrigger.Mix          = 95.0f;
                 retrigger.UpdatePeriod = 2.00f;
                 retrigger.Feedback     = 1.00f;
-                retrigger.Rate         = 0.70f;
+                retrigger.Rate         = 0.85f;
                 retrigger.Tick         = 0.15f;
-                retrigger.Updatable    = true;
+                retrigger.Updatable    = false;
 
-                retrigger.Type         = FxType.RetriggerEx;
+                retrigger.Type         = FxType.Retrigger;
 
                 return retrigger;
             }
@@ -97,17 +97,18 @@ namespace VoxCharger
             {
                 var retrigger = new Retrigger();
 
-                try 
-                { 
-                    if (!definition.GetValue("mix", out float mix) || !definition.GetValue("updatePeriod", out float updatePeriod))
-                        return retrigger;
+                try
+                {
+                    definition.GetValue("mix",          out float mix);
+                    definition.GetValue("updatePeriod", out float updatePeriod);
 
                     retrigger.WaveLength   = definition.GetValue("waveLength", out int waveLength)    ? waveLength : 0;
-                    retrigger.Mix          = mix;
-                    retrigger.Feedback     = definition.GetValue("feedbackLevel", out float feedback) ? feedback   : 0f;
-                    retrigger.Rate         = definition.GetValue("rate", out float rate)              ? rate       : 0f;
-                    retrigger.UpdatePeriod = updatePeriod * 4f;
-                    retrigger.Tick         = updatePeriod < 1.0f ? 1.0f - updatePeriod : 0f;
+                    // KSH percentages are normalized (0.0-1.0), VOX expects 0-100 scale
+                    retrigger.Mix          = mix > 0 ? mix * 100f : 95.00f;
+                    retrigger.Feedback     = definition.GetValue("feedbackLevel", out float feedback) ? feedback   : 1.00f;
+                    retrigger.Rate         = definition.GetValue("rate", out float rate)              ? rate       : 0.85f;
+                    retrigger.UpdatePeriod = updatePeriod > 0 ? updatePeriod * 4f : 2.00f;
+                    retrigger.Tick         = updatePeriod > 0 && updatePeriod < 1.0f ? 1.0f - updatePeriod : 0.15f;
                     retrigger.Updatable    = definition.GetString("updateTrigger", out string _);
                     retrigger.Type         = retrigger.Updatable ? FxType.RetriggerEx : FxType.Retrigger;
                 }
@@ -130,8 +131,17 @@ namespace VoxCharger
                        $"\t{UpdatePeriod:0.00}," +
                        $"\t{Feedback:0.00},"  +
                        $"\t{Rate:0.00},"      +
-                       $"\t{Tick:0.00}"       + 
+                       $"\t{Tick:0.00}"       +
                        (Updatable ? ",\t0.00" : string.Empty);
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                int kshWaveLength = WaveLength * 2;
+                return $"Retrigger;{kshWaveLength}";
             }
         }
     }

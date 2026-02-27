@@ -69,13 +69,14 @@ namespace VoxCharger
             {
                 var pitchShift = new PitchShift();
 
-                try 
+                try
                 {
-                    definition.GetValue("mix",       out float mix);
-                    definition.GetValue("reduction", out float samples);
+                    definition.GetValue("mix",   out float mix);
+                    definition.GetValue("pitch", out float pitch);
 
-                    pitchShift.Mix       = mix;
-                    pitchShift.Reduction = samples;
+                    // KSH percentages are normalized (0.0-1.0), VOX expects 0-100 scale
+                    pitchShift.Mix       = mix > 0 ? mix * 100f : 100.00f;
+                    pitchShift.Reduction = pitch != 0 ? pitch : 12f;
                     pitchShift.Type      = FxType.PitchShift;
                 }
                 catch (Exception)
@@ -92,6 +93,14 @@ namespace VoxCharger
                     return base.ToString();
 
                 return $"{(int)Type},\t{Mix:0.00},\t{Reduction:0.00}";
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                return $"PitchShift;{Reduction:0}";
             }
         }
     }

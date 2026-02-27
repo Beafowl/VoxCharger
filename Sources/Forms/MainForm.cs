@@ -28,6 +28,26 @@ namespace VoxCharger
 
         private void OnMainFormLoad(object sender, EventArgs e)
         {
+            try
+            {
+                string currentDir = Application.StartupPath;
+                string dbFilename = Path.Combine(currentDir, @"data\others\music_db.xml");
+
+                if (File.Exists(dbFilename))
+                {
+                    AssetManager.Initialize(currentDir);
+
+                    using (var mixSelector = new MixSelectorForm())
+                    {
+                        if (mixSelector.ShowDialog() == DialogResult.OK)
+                            Reload();
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore -- user can still open manually via the Open button
+            }
         }
 
         private void OnMainFormFormClosing(object sender, FormClosingEventArgs e)
@@ -273,6 +293,36 @@ namespace VoxCharger
             }
         }
 
+        private void OnSingleVoxConvertToolsMenuClick(object sender, EventArgs e)
+        {
+            using (var browser = new OpenFileDialog())
+            {
+                browser.Filter = "Sound Voltex Chart File|*.vox";
+                browser.CheckFileExists = true;
+
+                if (browser.ShowDialog() != DialogResult.OK)
+                    return;
+
+                using (var converter = new ConverterForm(browser.FileName, ConvertMode.ReverseConverter))
+                    converter.ShowDialog();
+            }
+        }
+
+        private void OnBulkVoxConvertToolsMenuClick(object sender, EventArgs e)
+        {
+            using (var browser = new CommonOpenFileDialog())
+            {
+                browser.IsFolderPicker = true;
+                browser.Multiselect    = false;
+
+                if (browser.ShowDialog() != CommonFileDialogResult.Ok)
+                    return;
+
+                using (var converter = new ConverterForm(browser.FileName, ConvertMode.BulkReverseConverter))
+                    converter.ShowDialog();
+            }
+        }
+
         private void OnMusicFileBuilderClick(object sender, EventArgs e)
         {
             using (var browser  = new OpenFileDialog())
@@ -414,6 +464,38 @@ namespace VoxCharger
             }
         }
 
+        private void OnRemoteMixesToolsMenuClick(object sender, EventArgs e)
+        {
+            using (var remoteForm = new RemoteMixForm())
+            {
+                if (remoteForm.ShowDialog() != DialogResult.OK)
+                    return;
+
+                if (string.IsNullOrEmpty(AssetManager.MixPath))
+                    return;
+
+                foreach (var header in remoteForm.ImportedHeaders)
+                {
+                    AssetManager.Headers.Add(header);
+                    MusicListBox.Items.Add(header);
+
+                    if (remoteForm.ImportedActions.ContainsKey(header.Ascii))
+                    {
+                        if (!_actions.ContainsKey(header.Ascii))
+                            _actions[header.Ascii] = new Queue<Action>();
+
+                        var queue = remoteForm.ImportedActions[header.Ascii];
+                        while (queue.Count > 0)
+                            _actions[header.Ascii].Enqueue(queue.Dequeue());
+                    }
+                }
+
+                _pristine = false;
+                if (_autosave)
+                    Save(AssetManager.MdbFilename);
+            }
+        }
+
         private void OnAboutHelpMenuClick(object sender, EventArgs e)
         {
             using (var about = new AboutForm())
@@ -506,7 +588,7 @@ namespace VoxCharger
                 Ascii            = defaultAscii,
                 Artist           = "Unknown",
                 ArtistYomigana   = "ダミー", // dummy 
-                Version          = GameVersion.ExceedGear,
+                Version          = GameVersion.Nabla,
                 InfVersion       = InfiniteVersion.Mxm,
                 BackgroundId     = short.Parse(ConverterForm.LastBackground),
                 GenreId          = 16,
@@ -607,8 +689,22 @@ namespace VoxCharger
                     IdTextBox.Text = header.Id.ToString();
                     MessageBox.Show("Music ID is already taken", "Duplicate", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
-                else
+                else if (id != header.Id)
+                {
+                    // Rename asset folder if it exists
+                    string oldPath = AssetManager.GetMusicPath(header);
                     header.Id = id;
+                    string newPath = AssetManager.GetMusicPath(header);
+
+                    if (Directory.Exists(oldPath) && !Directory.Exists(newPath))
+                    {
+                        if (!_actions.ContainsKey(header.Ascii))
+                            _actions[header.Ascii] = new Queue<Action>();
+
+                        _actions[header.Ascii].Enqueue(() => Directory.Move(oldPath, newPath));
+                        _pristine = false;
+                    }
+                }
             }
             else
                 IdTextBox.Text = header.Id.ToString();
@@ -1061,8 +1157,7 @@ namespace VoxCharger
                     control.Enabled = safe;
             }
 
-            // Modifying this could lead into disaster, must be left untouched
-            IdTextBox.ReadOnly    = true;
+            IdTextBox.ReadOnly    = !safe;
             LevelGroupBox.Enabled = true;
             foreach (Control control in LevelGroupBox.Controls)
             {

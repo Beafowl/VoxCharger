@@ -245,3 +245,12 @@ ModelManifest.xml
 
 # FAKE - F# Make
 .fake/
+
+# Environment and database files
+.env
+*.db
+
+# Python virtual environments
+env/
+venv/
+__pycache__/

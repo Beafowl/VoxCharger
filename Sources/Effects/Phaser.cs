@@ -67,31 +67,35 @@ namespace VoxCharger
                 return wobble;
             }
 
-            public new static Phaser FromKsh(KshDefinition definition)
+            // KSH Phaser maps to VOX Wobble (FxType 6)
+            public new static Wobble FromKsh(KshDefinition definition)
             {
-                var phaser = new Phaser();
-
-                try 
+                try
                 {
-                    definition.GetValue("mix",         out float mix);
-                    definition.GetValue("period",      out float period);
-                    definition.GetValue("feedback",    out float feedback);
-                    definition.GetValue("stereoWidth", out int stereoWidth);
-                    definition.GetValue("hiCutGain",   out float hiCutGain);
+                    definition.GetValue("mix",      out float mix);
+                    definition.GetValue("loFreq",   out float loFreq);
+                    definition.GetValue("hiFreq",   out float hiFreq);
+                    definition.GetValue("Q",        out float q);
+                    definition.GetValue("feedback", out float feedback);
 
-                    phaser.Mix         = mix;
-                    phaser.Period      = period;
-                    phaser.Feedback    = feedback;
-                    phaser.StereoWidth = stereoWidth;
-                    phaser.HiCutGain   = hiCutGain;
-                    phaser.Type        = FxType.Phaser;
+                    // KSH percentages are normalized (0.0-1.0), VOX expects 0-100 scale
+                    float wobbleMix  = mix > 0 ? mix * 100f : 100.00f;
+                    float lowFreq    = loFreq > 0 ? loFreq : 1500.00f;
+                    float highFreq   = hiFreq > 0 ? hiFreq : 20000.00f;
+                    float resonance  = q > 0 ? q : 1.41f;
+                    float waveLength = feedback > 0 ? feedback * 2f : 0.50f;
+
+                    var wobble  = new Wobble(wobbleMix, lowFreq, highFreq, waveLength, resonance);
+                    wobble.Flag = 1;
+
+                    return wobble;
                 }
                 catch (Exception)
                 {
-                    phaser.Type = FxType.None;
+                    var wobble  = new Wobble(100.00f, 1500.00f, 20000.00f, 0.50f, 1.41f);
+                    wobble.Flag = 1;
+                    return wobble;
                 }
-
-                return phaser;
             }
 
             public override string ToString()
@@ -105,6 +109,15 @@ namespace VoxCharger
                        $"\t{Feedback:0.00}," +
                        $"\t{StereoWidth},"   +
                        $"\t{HiCutGain:0.00}";
+            }
+
+            // VOX Phaser came from KSH Flanger
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                return "Flanger";
             }
         }
     }

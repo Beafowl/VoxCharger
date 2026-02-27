@@ -48,7 +48,7 @@ Original mix is locked to prevent you (yes, you) to break your KFC installation.
 Again, use [IFS LayeredFS](https://github.com/mon/ifs_layeredfs). If you haven't heard this then you're totally missing out!
 
 ### Conversion Output
-Vox have some sense in it's file format than ksh file, as the result, not all attributes can be mapped precisely and potentially lead into bug in the output file. For FX mapping, user defined FX will be ignored, only basic FX's that will be included into the output.
+Vox have some sense in it's file format than ksh file, as the result, not all attributes can be mapped precisely and potentially lead into bug in the output file. User defined FX (`#define_fx`) are supported and will be resolved to their underlying effect types.
 
 Remember, stupid input get stupid output. But if you believe it's a bug, feel free to open issue or PR.
 

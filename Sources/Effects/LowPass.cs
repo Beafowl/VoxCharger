@@ -79,6 +79,14 @@ namespace VoxCharger
                        $"\t{Frequency:0.00}," +
                        $"\t0";                  // Unknown too
             }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                return "LowPass";
+            }
         }
     }
 }

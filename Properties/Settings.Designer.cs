@@ -26,5 +26,20 @@ namespace VoxCharger.Properties
                 return defaultInstance;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string ServerUrl
+        {
+            get
+            {
+                return ((string)(this["ServerUrl"]));
+            }
+            set
+            {
+                this["ServerUrl"] = value;
+            }
+        }
     }
 }

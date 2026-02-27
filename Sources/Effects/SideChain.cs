@@ -76,7 +76,7 @@ namespace VoxCharger
             {
                 var sideChain = new SideChain();
 
-                try 
+                try
                 {
                     definition.GetValue("mix",         out float mix);
                     definition.GetValue("period",      out float period);
@@ -84,11 +84,11 @@ namespace VoxCharger
                     definition.GetValue("attackTime",  out int attack);
                     definition.GetValue("releaseTime", out int release);
 
-                    sideChain.Mix         = mix;
-                    sideChain.Period      = period / 2f;
-                    sideChain.Hold        = hold;
-                    sideChain.Attack      = attack;
-                    sideChain.Release     = release;
+                    sideChain.Mix         = mix > 0 ? mix : 90.00f;
+                    sideChain.Period      = period > 0 ? period / 2f : 1.00f;
+                    sideChain.Hold        = hold > 0 ? hold : 45;
+                    sideChain.Attack      = attack > 0 ? attack : 50;
+                    sideChain.Release     = release > 0 ? release : 60;
                     sideChain.Type        = FxType.SideChain;
                 }
                 catch (Exception)
@@ -110,6 +110,14 @@ namespace VoxCharger
                        $"\t{Hold},"          +
                        $"\t{Attack},"        +
                        $"\t{Release}";
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                return "SideChain";
             }
         }
 

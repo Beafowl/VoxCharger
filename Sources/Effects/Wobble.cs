@@ -86,11 +86,12 @@ namespace VoxCharger
                     definition.GetValue("resonance",   out float resonance);
 
                     wobble.Flag         = 3;
-                    wobble.Mix          = mix;
-                    wobble.LowFrequency = lowFreq;
-                    wobble.HiFrequency  = highFreq;
-                    wobble.WaveLength   = waveLength * 4;
-                    wobble.Resonance    = resonance;
+                    // KSH percentages are normalized (0.0-1.0), VOX expects 0-100 scale
+                    wobble.Mix          = mix > 0 ? mix * 100f : 100.00f;
+                    wobble.LowFrequency = lowFreq > 0 ? lowFreq : 500.00f;
+                    wobble.HiFrequency  = highFreq > 0 ? highFreq : 20000.00f;
+                    wobble.WaveLength   = waveLength > 0 ? waveLength * 4 : 4.00f;
+                    wobble.Resonance    = resonance > 0 ? resonance : 1.41f;
                     wobble.Type         = FxType.Wobble;
                 }
                 catch (Exception)
@@ -113,6 +114,18 @@ namespace VoxCharger
                        $"\t{HiFrequency:0.00},"  +
                        $"\t{WaveLength:0.00},"   +
                        $"\t{Resonance:0.00}";
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                // Flag==1 indicates this Wobble came from a KSH Phaser
+                if (Flag == 1)
+                    return "Phaser";
+
+                return "Wobble";
             }
         }
     }

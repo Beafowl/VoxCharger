@@ -56,9 +56,6 @@ namespace VoxCharger
                 if (!Enum.TryParse(prop[0], out FxType type) || (type != FxType.TapeStop && type != FxType.TapeStopEx))
                     return tapeStop;
 
-                if (prop.Length < 4)
-                    return tapeStop;
-
                 float rate = 50f;
                 if (prop.Length > 1)
                     rate = float.TryParse(prop[1], out rate) ? rate : 50f;
@@ -103,6 +100,17 @@ namespace VoxCharger
                     return base.ToString();
 
                 return $"{(int)Type},\t{Mix:0.00},\t{Speed:0.00},\t{Rate:0.00}";
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                // Reverse of: rate = -(kshSpeed - 20 - 40) / 40f => kshSpeed = -(Rate * 40) + 60
+                int kshSpeed = (int)(-(Rate * 40f) + 60f);
+                if (kshSpeed < 0) kshSpeed = 50;
+                return $"TapeStop;{kshSpeed}";
             }
         }
 

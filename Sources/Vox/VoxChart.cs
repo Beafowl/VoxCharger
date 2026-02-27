@@ -32,6 +32,10 @@ namespace VoxCharger
         {
             // Ksh events is already adjusted to be compatible with vox upon parsing
             Events = chart.Events;
+
+            // Use the KSH measure count for end position to preserve trailing idle time
+            if (chart.MeasureCount > 0)
+                EndPosition = new Time(chart.MeasureCount + 1, 1, 0);
         }
 
         public void Parse(string fileName)
@@ -600,7 +604,7 @@ namespace VoxCharger
             result += "#TAB EFFECT INFO\n";
             result += "1,\t90.00,\t400.00,\t18000.00,\t0.70\n";
             result += "1,\t90.00,\t600.00,\t15000.00,\t5.00\n";
-            result += "2,\t50.00,\t40.00,\t5000.00,\t0.70\n";
+            result += "2,\t90.00,\t40.00,\t5000.00,\t0.70\n";
             result += "2,\t90.00,\t40.00,\t2000.00,\t3.00\n";
             result += "3,\t100.00,\t30\n";
             result += "#END\n\n";

@@ -60,8 +60,13 @@
             this.ConvertToolsMenu = new System.Windows.Forms.MenuItem();
             this.SingleConvertToolsMenu = new System.Windows.Forms.MenuItem();
             this.BulkConvertToolsMenu = new System.Windows.Forms.MenuItem();
+            this.VoxConverterToolsMenu = new System.Windows.Forms.MenuItem();
+            this.SingleVoxConvertToolsMenu = new System.Windows.Forms.MenuItem();
+            this.BulkVoxConvertToolsMenu = new System.Windows.Forms.MenuItem();
             this.MusicFileBuilder = new System.Windows.Forms.MenuItem();
             this.S3VFileBuilder = new System.Windows.Forms.MenuItem();
+            this.ToolsSeparator1 = new System.Windows.Forms.MenuItem();
+            this.RemoteMixesToolsMenu = new System.Windows.Forms.MenuItem();
             this.HelpMenu = new System.Windows.Forms.MenuItem();
             this.AboutHelpMenu = new System.Windows.Forms.MenuItem();
             this.FileLabel = new System.Windows.Forms.Label();
@@ -291,26 +296,44 @@
             // ToolsMenu
             // 
             this.ToolsMenu.Index = 2;
-            this.ToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ConvertToolsMenu, this.MusicFileBuilder, this.S3VFileBuilder });
+            this.ToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ConvertToolsMenu, this.VoxConverterToolsMenu, this.MusicFileBuilder, this.S3VFileBuilder, this.ToolsSeparator1, this.RemoteMixesToolsMenu });
             this.ToolsMenu.Text = "Tools";
-            // 
+            //
             // ConvertToolsMenu
-            // 
+            //
             this.ConvertToolsMenu.Index = 0;
             this.ConvertToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.SingleConvertToolsMenu, this.BulkConvertToolsMenu });
             this.ConvertToolsMenu.Text = "KSH Converter";
-            // 
+            //
             // SingleConvertToolsMenu
-            // 
+            //
             this.SingleConvertToolsMenu.Index = 0;
             this.SingleConvertToolsMenu.Text = "Single..";
             this.SingleConvertToolsMenu.Click += new System.EventHandler(this.OnSingleConvertToolsMenuClick);
-            // 
+            //
             // BulkConvertToolsMenu
-            // 
+            //
             this.BulkConvertToolsMenu.Index = 1;
             this.BulkConvertToolsMenu.Text = "Bulk..";
             this.BulkConvertToolsMenu.Click += new System.EventHandler(this.OnBulkConvertToolsMenuClick);
+            //
+            // VoxConverterToolsMenu
+            //
+            this.VoxConverterToolsMenu.Index = 1;
+            this.VoxConverterToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.SingleVoxConvertToolsMenu, this.BulkVoxConvertToolsMenu });
+            this.VoxConverterToolsMenu.Text = "VOX Converter";
+            //
+            // SingleVoxConvertToolsMenu
+            //
+            this.SingleVoxConvertToolsMenu.Index = 0;
+            this.SingleVoxConvertToolsMenu.Text = "Single..";
+            this.SingleVoxConvertToolsMenu.Click += new System.EventHandler(this.OnSingleVoxConvertToolsMenuClick);
+            //
+            // BulkVoxConvertToolsMenu
+            //
+            this.BulkVoxConvertToolsMenu.Index = 1;
+            this.BulkVoxConvertToolsMenu.Text = "Bulk..";
+            this.BulkVoxConvertToolsMenu.Click += new System.EventHandler(this.OnBulkVoxConvertToolsMenuClick);
             // 
             // MusicFileBuilder
             // 
@@ -324,6 +347,15 @@
             this.S3VFileBuilder.Index = 2;
             this.S3VFileBuilder.Text = "S3V Builder";
             this.S3VFileBuilder.Click += new System.EventHandler(this.OnS3VFileBuilderClick);
+            //
+            // ToolsSeparator1
+            //
+            this.ToolsSeparator1.Text = "-";
+            //
+            // RemoteMixesToolsMenu
+            //
+            this.RemoteMixesToolsMenu.Text = "Remote Mixes..";
+            this.RemoteMixesToolsMenu.Click += new System.EventHandler(this.OnRemoteMixesToolsMenuClick);
             //
             // HelpMenu
             //
@@ -767,7 +799,7 @@
             this.VersionDropDown.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.VersionDropDown.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.VersionDropDown.FormattingEnabled = true;
-            this.VersionDropDown.Items.AddRange(new object[] { "Sound Voltex: Booth", "Sound Voltex II: Infinite Infection", "Sound Voltex III: Gravity Wars", "Sound Voltex IV: Heavenly Haven", "Sound Voltex V: Vivid Wave", "Sound Voltex VI: Exceed Gear" });
+            this.VersionDropDown.Items.AddRange(new object[] { "Sound Voltex: Booth", "Sound Voltex II: Infinite Infection", "Sound Voltex III: Gravity Wars", "Sound Voltex IV: Heavenly Haven", "Sound Voltex V: Vivid Wave", "Sound Voltex VI: Exceed Gear", "Sound Voltex VII: Nabla" });
             this.VersionDropDown.Location = new System.Drawing.Point(83, 130);
             this.VersionDropDown.Name = "VersionDropDown";
             this.VersionDropDown.Size = new System.Drawing.Size(282, 21);
@@ -987,12 +1019,17 @@
         private System.Windows.Forms.MenuItem ImportKshEditMenu;
         private System.Windows.Forms.MenuItem SingleConvertToolsMenu;
         private System.Windows.Forms.MenuItem BulkConvertToolsMenu;
+        private System.Windows.Forms.MenuItem VoxConverterToolsMenu;
+        private System.Windows.Forms.MenuItem SingleVoxConvertToolsMenu;
+        private System.Windows.Forms.MenuItem BulkVoxConvertToolsMenu;
         private System.Windows.Forms.MenuItem MenuSeparator6;
         private System.Windows.Forms.MenuItem AutosaveEditMenu;
         private System.Windows.Forms.MenuItem BulkImportKshEditMenu;
         private System.Windows.Forms.MenuItem MenuSeparator7;
         private System.Windows.Forms.MenuItem MenuSeparator8;
         private System.Windows.Forms.MenuItem BulkImportKshMenu;
+        private System.Windows.Forms.MenuItem ToolsSeparator1;
+        private System.Windows.Forms.MenuItem RemoteMixesToolsMenu;
     }
 }
 

@@ -47,6 +47,24 @@ namespace VoxCharger
                 return bitCrusher;
             }
 
+            public new static BitCrusher FromKsh(string data)
+            {
+                var bitCrusher = new BitCrusher();
+                var prop = data.Trim().Split(';').Select(p => p.Trim()).ToArray();
+                if (!Enum.TryParse(prop[0], out FxType type) || type != FxType.BitCrusher)
+                    return bitCrusher;
+
+                int reduction = 12;
+                if (prop.Length > 1)
+                    reduction = int.TryParse(prop[1], out reduction) ? reduction : 12;
+
+                bitCrusher.Type      = type;
+                bitCrusher.Mix       = 100.00f;
+                bitCrusher.Reduction = reduction;
+
+                return bitCrusher;
+            }
+
             public new static BitCrusher FromKsh(KshDefinition definition)
             {
                 var bitCrusher = new BitCrusher();
@@ -56,8 +74,9 @@ namespace VoxCharger
                     definition.GetValue("mix",       out float mix);
                     definition.GetValue("reduction", out int samples);
 
-                    bitCrusher.Mix       = mix;
-                    bitCrusher.Reduction = samples;
+                    // KSH percentages are normalized (0.0-1.0), VOX expects 0-100 scale
+                    bitCrusher.Mix       = mix > 0 ? mix * 100f : 100.00f;
+                    bitCrusher.Reduction = samples > 0 ? samples : 12;
                     bitCrusher.Type      = FxType.BitCrusher;
                 }
                 catch (Exception)
@@ -74,6 +93,14 @@ namespace VoxCharger
                     return base.ToString();
 
                 return $"{(int)Type},\t{Mix:0.00},\t{Reduction}";
+            }
+
+            public override string ToKsh()
+            {
+                if (Type == FxType.None)
+                    return string.Empty;
+
+                return $"BitCrusher;{Reduction}";
             }
         }
     }

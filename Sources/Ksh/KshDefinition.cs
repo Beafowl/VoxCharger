@@ -33,6 +33,16 @@ namespace VoxCharger
             }
         }
 
+        public void SetValue(string pname, string value)
+        {
+            _definitions[pname] = value;
+        }
+
+        public void RemoveValue(string pname)
+        {
+            _definitions.Remove(pname);
+        }
+
         public bool GetString(string pname, out string result)
         {
             result = string.Empty;
@@ -136,8 +146,8 @@ namespace VoxCharger
             result = 0;
             if (_definitions.ContainsKey(pname))
             {
-                string str = _definitions[pname];
-                if (float.TryParse(str.Replace("%", string.Empty), out float percentage)) 
+                string str = GetDominantValue(_definitions[pname]);
+                if (float.TryParse(str.Replace("%", string.Empty), out float percentage))
                 {
                     result = IsNormalized ? (int)(percentage / 100f) : (int)percentage;
                     return true;
@@ -152,7 +162,7 @@ namespace VoxCharger
             result = 0f;
             if (_definitions.ContainsKey(pname))
             {
-                string str = _definitions[pname];
+                string str = GetDominantValue(_definitions[pname]);
                 if (float.TryParse(str.Replace("%", string.Empty), out result))
                 {
                     result = IsNormalized ? result / 100f : result;
@@ -165,15 +175,16 @@ namespace VoxCharger
 
         private string GetDominantValue(string data)
         {
-            foreach (var separator in new char[] { '-', '>' })
+            foreach (var separator in new char[] { '>', '-' })
             {
                 if (data.Contains(separator))
                 {
-                    var values = data.Split('-');
+                    var values = data.Split(separator);
                     if (values.Length < 2)
                         continue;
 
-                    return values[0];
+                    // Use the last value (target/end of range) as the dominant value
+                    return values[values.Length - 1];
                 }
             }
 

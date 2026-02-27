@@ -9,6 +9,7 @@ namespace VoxCharger
         GravityWars       = 3,
         HeavenlyHaven     = 4,
         VividWave         = 5,
-        ExceedGear        = 6
+        ExceedGear        = 6,
+        Nabla             = 7
     }
 }

@@ -84,10 +84,16 @@ namespace VoxCharger
                     else
                         continue; // Unknown difficulty, 
 
+                    int rawLevel = int.Parse(diffInfo.SelectSingleNode("difnum").InnerText);
+                    // Nabla (V7+) stores difnum as level*10 (e.g. 175 = level 17.5)
+                    // Older versions store raw level (e.g. 17)
+                    if (rawLevel > 20)
+                        rawLevel /= 10;
+
                     var lvHeader = new VoxLevelHeader
                     {
                         Difficulty  = current,
-                        Level       = int.Parse(diffInfo.SelectSingleNode("difnum").InnerText),
+                        Level       = rawLevel,
                         Effector    = diffInfo.SelectSingleNode("effected_by").InnerText,
                         Illustrator = diffInfo.SelectSingleNode("illustrator").InnerText,
                         Price       = int.Parse(diffInfo.SelectSingleNode("price").InnerText),
@@ -159,7 +165,8 @@ namespace VoxCharger
                 info.AppendChild(createMetaElement(doc, "distribution_date", header.DistributionDate.ToString("yyyyMMdd"), "u32"));
                 info.AppendChild(createMetaElement(doc, "volume",            header.Volume.ToString(), "u16"));
                 info.AppendChild(createMetaElement(doc, "bg_no",             header.BackgroundId.ToString(), "u16"));
-                info.AppendChild(createMetaElement(doc, "genre",             header.GenreId.ToString(), "u8"));
+                bool isNabla = header.Version >= GameVersion.Nabla;
+                info.AppendChild(createMetaElement(doc, "genre",             header.GenreId.ToString(), isNabla ? "u32" : "u8"));
                 info.AppendChild(createMetaElement(doc, "is_fixed",          "1", "u8"));
                 info.AppendChild(createMetaElement(doc, "version",           ((int)header.Version).ToString(), "u8"));
                 info.AppendChild(createMetaElement(doc, "demo_pri",          "0", "s8"));
@@ -177,7 +184,8 @@ namespace VoxCharger
                     if (header.Levels.ContainsKey(difficulty))
                         lvHeader = header.Levels[difficulty];
 
-                    detail.AppendChild(createMetaElement(doc, "difnum",       lvHeader.Level.ToString(), "u8"));
+                    int difnum = isNabla ? lvHeader.Level * 10 : lvHeader.Level;
+                    detail.AppendChild(createMetaElement(doc, "difnum",       difnum.ToString(), "u8"));
                     detail.AppendChild(createMetaElement(doc, "illustrator",  lvHeader.Illustrator, string.Empty));
                     detail.AppendChild(createMetaElement(doc, "effected_by",  lvHeader.Effector, string.Empty));
                     detail.AppendChild(createMetaElement(doc, "price",        lvHeader.Price.ToString(), "s32"));

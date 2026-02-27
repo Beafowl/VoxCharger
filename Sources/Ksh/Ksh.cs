@@ -29,6 +29,8 @@ namespace VoxCharger
         public float BpmMin          { get; set; }
         public float BpmMax          { get; set; }
         public string Background     { get; set; }
+        public int MeasureCount      { get; private set; }
+        public List<string> FxLog    { get; set; }
 
         public EventCollection Events { get; private set; } = new EventCollection();
 
@@ -89,7 +91,7 @@ namespace VoxCharger
                 ArtistYomigana   = "ダミー",
                 BpmMin           = BpmMin,
                 BpmMax           = BpmMax,
-                Volume           = Volume > 0 ? (short)Volume : (short)91,
+                Volume           = Volume > 0 ? (short)Volume : (short)80,
                 DistributionDate = DateTime.Now,
                 BackgroundId     = DefaultBackgroundId,
                 GenreId          = DefaultGenre,
@@ -103,7 +105,8 @@ namespace VoxCharger
                 Difficulty  = Difficulty,
                 Illustrator = Illustrator,
                 Effector    = Effector,
-                Level       = Level
+                Level       = Level,
+                Radar       = RadarCalculator.Calculate(Events)
             };
         }
 
@@ -131,13 +134,32 @@ namespace VoxCharger
             int measure   = 0;
 
             int measureCount = lines.Count(l => l.Trim() == "--");
-            int fxCount   = 0;
+            int fxCount   = 1;
             int noteCount = 0;
+
+            // Pre-scan for user-defined FX declarations (#define_fx <name> <params>)
+            var fxDefinitions = new Dictionary<string, KshDefinition>();
+            foreach (var ln in lines)
+            {
+                var trimmed = ln.Trim();
+                if (!trimmed.StartsWith("#define_fx "))
+                    continue;
+
+                // Format: #define_fx <name> <type=...;param=...;...>
+                var parts = trimmed.Substring("#define_fx ".Length);
+                int sep = parts.IndexOf(' ');
+                if (sep <= 0)
+                    continue;
+
+                string name = parts.Substring(0, sep).Trim();
+                string def  = parts.Substring(sep + 1).Trim();
+                fxDefinitions[name] = new KshDefinition(def);
+            }
 
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i].Trim();
-                if (string.IsNullOrEmpty(line) || line.StartsWith("//"))
+                if (string.IsNullOrEmpty(line) || line.StartsWith("//") || line.StartsWith("#"))
                     continue;
 
 
@@ -325,12 +347,56 @@ namespace VoxCharger
 
                             var htrack  = prop == "fx-l" ? Event.ButtonTrack.FxL : Event.ButtonTrack.FxR;
                             holdFx[htrack] = new Effect();
-                            
+
                             var fx = Effect.FromKsh(value);
+
+                            // Resolve user-defined FX by name lookup
+                            string[] fxParts = value.Trim().Split(';');
+                            string fxName = fxParts[0].Trim();
+                            if (fx == null && fxDefinitions.TryGetValue(fxName, out var fxDef))
+                            {
+                                // Apply inline parameter override (e.g., "ret1;16" → waveLength=1/16)
+                                string paramName = null;
+                                string origValue = null;
+                                if (fxParts.Length > 1 && !string.IsNullOrEmpty(fxParts[1].Trim()))
+                                {
+                                    string inlineParam = fxParts[1].Trim();
+                                    fxDef.GetString("type", out string fxType);
+                                    paramName = GetInlineParamName(fxType);
+                                    if (paramName != null)
+                                    {
+                                        // Save original value to restore after parsing
+                                        fxDef.GetString(paramName, out origValue);
+
+                                        // For waveLength/period params, convert to fraction format (16 → 1/16)
+                                        if (paramName == "waveLength" || paramName == "period")
+                                            fxDef.SetValue(paramName, $"1/{inlineParam}");
+                                        else
+                                            fxDef.SetValue(paramName, inlineParam);
+                                    }
+                                }
+
+                                fx = Effect.FromKsh(fxDef);
+
+                                // Restore original definition value so subsequent uses aren't affected
+                                if (paramName != null)
+                                {
+                                    if (origValue != null)
+                                        fxDef.SetValue(paramName, origValue);
+                                    else
+                                        fxDef.RemoveValue(paramName);
+                                }
+                            }
+
                             if (fx != null)
                             {
                                 fx.Id = ++fxCount;
                                 holdFx[htrack] = fx;
+                                FxLog?.Add($"{prop}={value} → ID={fx.Id} Type={fx.Type}({(int)fx.Type}) Output=[{fx}]");
+                            }
+                            else
+                            {
+                                FxLog?.Add($"{prop}={value} → FAILED (null)");
                             }
 
                             break;
@@ -769,6 +835,483 @@ namespace VoxCharger
                     }
                     #endregion
                 }
+            }
+
+            MeasureCount = measure;
+        }
+
+        private static string GetInlineParamName(string fxType)
+        {
+            switch (fxType)
+            {
+                case "Retrigger":
+                case "Echo":
+                case "Gate":
+                case "Wobble":     return "waveLength";
+                case "SideChain":  return "period";
+                case "TapeStop":   return "speed";
+                case "Flanger":    return "period";
+                case "BitCrusher": return "reduction";
+                case "PitchShift": return "pitch";
+                case "Phaser":     return "period";
+                default:           return null;
+            }
+        }
+
+        public void Import(VoxChart chart)
+        {
+            Events = chart.Events;
+
+            // Extract BPM range from events
+            foreach (var ev in Events)
+            {
+                if (ev is Event.Bpm bpm)
+                {
+                    if (BpmMin == 0f || bpm.Value < BpmMin)
+                        BpmMin = bpm.Value;
+                    if (BpmMax == 0f || bpm.Value > BpmMax)
+                        BpmMax = bpm.Value;
+                }
+            }
+
+            // Calculate MeasureCount from EndPosition
+            if (chart.EndPosition != null)
+                MeasureCount = chart.EndPosition.Measure - 1;
+            else
+                MeasureCount = Events.Max(ev => ev.Time.Measure);
+        }
+
+        public void Serialize(string fileName)
+        {
+            var sb = new StringBuilder();
+
+            // Header metadata
+            sb.AppendLine($"title={Title ?? ""}");
+            sb.AppendLine($"artist={Artist ?? ""}");
+            sb.AppendLine($"effect={Effector ?? ""}");
+            sb.AppendLine($"illustrator={Illustrator ?? ""}");
+            sb.AppendLine($"jacket={JacketFileName ?? "nowprinting1.png"}");
+            sb.AppendLine($"difficulty={DifficultyToKsh(Difficulty)}");
+            sb.AppendLine($"level={Level}");
+
+            if (BpmMin == BpmMax || BpmMin == 0)
+                sb.AppendLine($"t={BpmMax}");
+            else
+                sb.AppendLine($"t={BpmMin}-{BpmMax}");
+
+            var firstSig = Events.GetTimeSignature(1);
+            sb.AppendLine($"beat={firstSig.Beat}/{firstSig.Note}");
+            sb.AppendLine($"m={MusicFileName ?? ""}");
+            sb.AppendLine($"mvol={Volume}");
+            sb.AppendLine($"o={MusicOffset}");
+            sb.AppendLine($"bg=desert");
+            sb.AppendLine($"po={PreviewOffset}");
+            sb.AppendLine("ver=167");
+            sb.AppendLine("--");
+
+            // Pre-build laser segments for each track
+            var laserSegments = BuildLaserSegments();
+
+            // Track active button holds: maps track to end absolute offset
+            var activeHolds = new Dictionary<Event.ButtonTrack, int>();
+
+            // Track current state for change detection
+            Effect currentFxL = null;
+            Effect currentFxR = null;
+            var currentChipFxL = Event.ChipFx.None;
+            var currentChipFxR = Event.ChipFx.None;
+            var currentFilter = Event.LaserFilter.Peak;
+            int currentRangeL = 1;
+            int currentRangeR = 1;
+
+            for (int measure = 1; measure <= MeasureCount; measure++)
+            {
+                var sig = Events.GetTimeSignature(measure);
+                int ticksPerMeasure = 192;
+
+                // Calculate resolution for this measure
+                int resolution = CalculateResolution(measure, sig);
+
+                int ticksPerRow = ticksPerMeasure / resolution;
+
+                for (int row = 0; row < resolution; row++)
+                {
+                    int absOffset = measure * ticksPerMeasure + row * ticksPerRow;
+                    var time = Time.FromOffset(absOffset, sig);
+
+                    // Emit time signature change
+                    foreach (var ev in Events[time])
+                    {
+                        if (ev is Event.TimeSignature ts && ts.Time.Measure == measure && ts.Time.Beat == 1 && ts.Time.Offset == 0 && row == 0)
+                        {
+                            // Only emit if different from first signature (already in header)
+                            if (measure > 1)
+                                sb.AppendLine($"beat={ts.Beat}/{ts.Note}");
+                        }
+                    }
+
+                    // Emit BPM changes and stop events
+                    foreach (var ev in Events[time])
+                    {
+                        if (ev is Event.Bpm bpm)
+                        {
+                            if (bpm.IsStop)
+                            {
+                                // Find the matching non-stop BPM to calculate duration
+                                var stopEv = Events.OfType<Event.Stop>().FirstOrDefault(s => s.Time == time);
+                                if (stopEv != null)
+                                    sb.AppendLine($"stop={stopEv.Duration}");
+                            }
+                            else
+                            {
+                                // Only emit if it's a BPM change (not the very first BPM at measure 1)
+                                if (measure > 1 || time.Beat > 1 || time.Offset > 0)
+                                    sb.AppendLine($"t={bpm.Value}");
+                            }
+                        }
+                    }
+
+                    // Emit tilt mode changes
+                    foreach (var ev in Events[time])
+                    {
+                        if (ev is Event.TiltMode tilt)
+                        {
+                            switch (tilt.Mode)
+                            {
+                                case Event.TiltType.Normal:      sb.AppendLine("tilt=normal");       break;
+                                case Event.TiltType.Large:       sb.AppendLine("tilt=bigger");       break;
+                                case Event.TiltType.Incremental: sb.AppendLine("tilt=keep_bigger");  break;
+                            }
+                        }
+                    }
+
+                    // Emit camera events
+                    foreach (var ev in Events[time])
+                    {
+                        if (ev is Camera camera)
+                        {
+                            switch (camera.Work)
+                            {
+                                case Camera.WorkType.Rotation:
+                                    sb.AppendLine($"zoom_top={(int)(camera.End * 100f)}");
+                                    break;
+                                case Camera.WorkType.Radian:
+                                    sb.AppendLine($"zoom_bottom={(int)(camera.End * -100f)}");
+                                    break;
+                                case Camera.WorkType.Tilt:
+                                    sb.AppendLine($"tilt={(int)(camera.End * -1f)}");
+                                    break;
+                                case Camera.WorkType.LaneClear:
+                                    sb.AppendLine($"lane_toggle={(int)camera.End}");
+                                    break;
+                            }
+                        }
+                    }
+
+                    // Collect button events at this time
+                    var buttonsAtTime = Events[time].OfType<Event.Button>().ToList();
+
+                    // Emit FX hold effect definitions (fx-l=, fx-r=) before the hold starts
+                    foreach (var bt in buttonsAtTime)
+                    {
+                        if (bt.IsFx && bt.HoldLength > 0 && bt.HoldFx != null)
+                        {
+                            string fxLine = bt.HoldFx.ToKsh();
+                            if (bt.Track == Event.ButtonTrack.FxL && bt.HoldFx != currentFxL)
+                            {
+                                currentFxL = bt.HoldFx;
+                                if (!string.IsNullOrEmpty(fxLine))
+                                    sb.AppendLine($"fx-l={fxLine}");
+                            }
+                            else if (bt.Track == Event.ButtonTrack.FxR && bt.HoldFx != currentFxR)
+                            {
+                                currentFxR = bt.HoldFx;
+                                if (!string.IsNullOrEmpty(fxLine))
+                                    sb.AppendLine($"fx-r={fxLine}");
+                            }
+                        }
+                    }
+
+                    // Emit chip FX SE definitions (fx-l_se=, fx-r_se=) before the chip
+                    foreach (var bt in buttonsAtTime)
+                    {
+                        if (bt.IsFx && bt.HoldLength == 0 && bt.HitFx != Event.ChipFx.None)
+                        {
+                            if (bt.Track == Event.ButtonTrack.FxL && bt.HitFx != currentChipFxL)
+                            {
+                                currentChipFxL = bt.HitFx;
+                                sb.AppendLine($"fx-l_se={bt.HitFx}");
+                            }
+                            else if (bt.Track == Event.ButtonTrack.FxR && bt.HitFx != currentChipFxR)
+                            {
+                                currentChipFxR = bt.HitFx;
+                                sb.AppendLine($"fx-r_se={bt.HitFx}");
+                            }
+                        }
+                    }
+
+                    // Emit laser filter and range changes
+                    var lasersAtTime = Events[time].OfType<Event.Laser>().ToList();
+                    foreach (var laser in lasersAtTime)
+                    {
+                        if (laser.Filter != currentFilter && laser.Filter != Event.LaserFilter.None)
+                        {
+                            currentFilter = laser.Filter;
+                            switch (currentFilter)
+                            {
+                                case Event.LaserFilter.Peak:       sb.AppendLine("filtertype=peak"); break;
+                                case Event.LaserFilter.LowPass:    sb.AppendLine("filtertype=lpf1"); break;
+                                case Event.LaserFilter.HighPass:   sb.AppendLine("filtertype=hpf1"); break;
+                                case Event.LaserFilter.BitCrusher: sb.AppendLine("filtertype=bitc"); break;
+                            }
+                        }
+
+                        if (laser.Track == Event.LaserTrack.Left && laser.Range != currentRangeL && laser.Range > 1)
+                        {
+                            currentRangeL = laser.Range;
+                            sb.AppendLine($"laserrange_l={currentRangeL}x");
+                        }
+                        else if (laser.Track == Event.LaserTrack.Right && laser.Range != currentRangeR && laser.Range > 1)
+                        {
+                            currentRangeR = laser.Range;
+                            sb.AppendLine($"laserrange_r={currentRangeR}x");
+                        }
+                    }
+
+                    // Build note line: ABCD|LR|lr
+                    char[] bt4 = { '0', '0', '0', '0' }; // BT-A, BT-B, BT-C, BT-D
+                    char[] fx2 = { '0', '0' };             // FX-L, FX-R
+                    char[] vol = { '-', '-' };             // VOL-L, VOL-R
+
+                    // Process buttons
+                    foreach (var track in new[] { Event.ButtonTrack.A, Event.ButtonTrack.B, Event.ButtonTrack.C, Event.ButtonTrack.D, Event.ButtonTrack.FxL, Event.ButtonTrack.FxR })
+                    {
+                        bool isFx = track == Event.ButtonTrack.FxL || track == Event.ButtonTrack.FxR;
+                        int charIdx;
+                        switch (track)
+                        {
+                            case Event.ButtonTrack.A:   charIdx = 0; break;
+                            case Event.ButtonTrack.B:   charIdx = 1; break;
+                            case Event.ButtonTrack.C:   charIdx = 2; break;
+                            case Event.ButtonTrack.D:   charIdx = 3; break;
+                            case Event.ButtonTrack.FxL: charIdx = 0; break;
+                            case Event.ButtonTrack.FxR: charIdx = 1; break;
+                            default: continue;
+                        }
+
+                        // Check for new events at this time
+                        var btn = buttonsAtTime.FirstOrDefault(b => b.Track == track);
+                        if (btn != null)
+                        {
+                            if (btn.HoldLength == 0)
+                            {
+                                // Chip note
+                                if (isFx)
+                                    fx2[charIdx] = '2';
+                                else
+                                    bt4[charIdx] = '1';
+                            }
+                            else
+                            {
+                                // Hold start
+                                if (isFx)
+                                    fx2[charIdx] = '1';
+                                else
+                                    bt4[charIdx] = '2';
+
+                                activeHolds[track] = absOffset + btn.HoldLength;
+                            }
+                        }
+                        else if (activeHolds.ContainsKey(track))
+                        {
+                            // Inside active hold
+                            if (absOffset < activeHolds[track])
+                            {
+                                if (isFx)
+                                    fx2[charIdx] = '1';
+                                else
+                                    bt4[charIdx] = '2';
+                            }
+                            else
+                            {
+                                // Hold ended
+                                activeHolds.Remove(track);
+                            }
+                        }
+                    }
+
+                    // Process lasers
+                    vol[0] = GetLaserChar(laserSegments, Event.LaserTrack.Left, absOffset);
+                    vol[1] = GetLaserChar(laserSegments, Event.LaserTrack.Right, absOffset);
+
+                    sb.AppendLine($"{bt4[0]}{bt4[1]}{bt4[2]}{bt4[3]}|{fx2[0]}{fx2[1]}|{vol[0]}{vol[1]}");
+                }
+
+                sb.AppendLine("--");
+            }
+
+            File.WriteAllText(fileName, sb.ToString(), DefaultEncoding);
+        }
+
+        private int CalculateResolution(int measure, (int beat, int note) sig)
+        {
+            int ticksPerMeasure = 192;
+            int measureStart = measure * ticksPerMeasure;
+
+            // Collect all absolute offsets of events in this measure
+            var offsets = new HashSet<int>();
+            foreach (var ev in Events[measure])
+            {
+                int absOff = ev.Time.GetAbsoluteOffset(sig) - measureStart;
+                if (absOff >= 0 && absOff < ticksPerMeasure)
+                    offsets.Add(absOff);
+            }
+
+            if (offsets.Count == 0)
+                return sig.beat * sig.note; // Default: e.g. 16 for 4/4
+
+            // Find GCD of all offsets and ticksPerMeasure
+            int gcd = ticksPerMeasure;
+            foreach (int off in offsets)
+            {
+                if (off > 0)
+                    gcd = Gcd(gcd, off);
+            }
+
+            int resolution = ticksPerMeasure / gcd;
+
+            // Cap at reasonable maximum, minimum at signature default
+            int minRes = sig.beat * sig.note;
+            if (resolution < minRes)
+                resolution = minRes;
+
+            return resolution;
+        }
+
+        private static int Gcd(int a, int b)
+        {
+            while (b != 0)
+            {
+                int t = b;
+                b = a % b;
+                a = t;
+            }
+            return a;
+        }
+
+        private class LaserPoint
+        {
+            public int AbsOffset { get; set; }
+            public int LaserOffset { get; set; }
+        }
+
+        private Dictionary<Event.LaserTrack, List<List<LaserPoint>>> BuildLaserSegments()
+        {
+            var segments = new Dictionary<Event.LaserTrack, List<List<LaserPoint>>>
+            {
+                { Event.LaserTrack.Left,  new List<List<LaserPoint>>() },
+                { Event.LaserTrack.Right, new List<List<LaserPoint>>() }
+            };
+
+            foreach (var track in new[] { Event.LaserTrack.Left, Event.LaserTrack.Right })
+            {
+                List<LaserPoint> current = null;
+
+                foreach (var ev in Events)
+                {
+                    if (ev is Event.Slam slam && slam.Track == track)
+                    {
+                        var sig = Events.GetTimeSignature(slam.Time);
+                        int absOff = slam.Time.GetAbsoluteOffset(sig);
+
+                        if (current == null)
+                        {
+                            current = new List<LaserPoint>();
+                            current.Add(new LaserPoint { AbsOffset = absOff, LaserOffset = slam.Start.Offset });
+                        }
+
+                        // Add slam end point at same offset (will be rendered as same-row slam)
+                        current.Add(new LaserPoint { AbsOffset = absOff, LaserOffset = slam.End.Offset });
+                    }
+                    else if (ev is Event.Laser laser && laser.Track == track)
+                    {
+                        var sig = Events.GetTimeSignature(laser.Time);
+                        int absOff = laser.Time.GetAbsoluteOffset(sig);
+
+                        if (laser.Flag == Event.LaserFlag.Start)
+                        {
+                            current = new List<LaserPoint>();
+                            current.Add(new LaserPoint { AbsOffset = absOff, LaserOffset = laser.Offset });
+                        }
+                        else if (laser.Flag == Event.LaserFlag.Tick && current != null)
+                        {
+                            current.Add(new LaserPoint { AbsOffset = absOff, LaserOffset = laser.Offset });
+                        }
+                        else if (laser.Flag == Event.LaserFlag.End)
+                        {
+                            if (current != null)
+                            {
+                                current.Add(new LaserPoint { AbsOffset = absOff, LaserOffset = laser.Offset });
+                                segments[track].Add(current);
+                                current = null;
+                            }
+                        }
+                    }
+                }
+
+                // Handle segment that never got an End event
+                if (current != null && current.Count > 0)
+                    segments[track].Add(current);
+            }
+
+            return segments;
+        }
+
+        private static char GetLaserChar(Dictionary<Event.LaserTrack, List<List<LaserPoint>>> segments, Event.LaserTrack track, int absOffset)
+        {
+            foreach (var segment in segments[track])
+            {
+                if (segment.Count == 0)
+                    continue;
+
+                int segStart = segment[0].AbsOffset;
+                int segEnd   = segment[segment.Count - 1].AbsOffset;
+
+                if (absOffset < segStart)
+                    continue;
+                if (absOffset > segEnd)
+                    continue;
+
+                // Check if there's a point at this exact offset
+                foreach (var point in segment)
+                {
+                    if (point.AbsOffset == absOffset)
+                        return OffsetToKshChar(point.LaserOffset);
+                }
+
+                // Inside segment but no position change - continuation
+                return ':';
+            }
+
+            return '-';
+        }
+
+        private static char OffsetToKshChar(int offset)
+        {
+            int index = (int)Math.Round(offset / 127.0 * 50.0);
+            index = Math.Max(0, Math.Min(50, index));
+            return VolPositions[index];
+        }
+
+        private static string DifficultyToKsh(Difficulty difficulty)
+        {
+            switch (difficulty)
+            {
+                case Difficulty.Novice:   return "light";
+                case Difficulty.Advanced: return "challenge";
+                case Difficulty.Exhaust:  return "extended";
+                case Difficulty.Infinite: return "infinite";
+                default:                  return "infinite";
             }
         }
     }

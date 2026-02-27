@@ -28,6 +28,11 @@ namespace VoxCharger
             return "0,\t0,\t0,\t0,\t0,\t0,\t0";
         }
 
+        public virtual string ToKsh()
+        {
+            return string.Empty;
+        }
+
         public static Effect FromVox(string data)
         {
             if (string.IsNullOrEmpty(data))
@@ -60,7 +65,7 @@ namespace VoxCharger
             if (string.IsNullOrEmpty(data))
                 return null;
 
-            var prop = data.Trim().Split(',');
+            var prop = data.Trim().Split(';');
             if (!Enum.TryParse(prop[0].Replace("Echo", "Retrigger"), out FxType type))
                 return null;
 
@@ -74,6 +79,7 @@ namespace VoxCharger
                 case FxType.TapeStop:    return TapeStop.FromKsh(data);
                 case FxType.SideChain:   return SideChain.FromKsh(data);
                 case FxType.Wobble:      return Wobble.FromKsh(data);
+                case FxType.BitCrusher:  return BitCrusher.FromKsh(data);
                 case FxType.PitchShift:  return PitchShift.FromKsh(data);
                 case FxType.Flanger:     return Flanger.FromKsh(data);
                 default:                 return Default;
@@ -95,7 +101,7 @@ namespace VoxCharger
                 case "SideChain":  return SideChain.FromKsh(definition);
                 case "LowPass":
                 case "Wobble":     return Wobble.FromKsh(definition);
-                case "PitchShift":
+                case "PitchShift": return PitchShift.FromKsh(definition);
                 case "BitCrusher": return BitCrusher.FromKsh(definition);
                 case "Flanger":    return Flanger.FromKsh(definition);
                 default:           return new Effect();
