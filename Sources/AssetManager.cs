@@ -186,9 +186,7 @@ namespace VoxCharger
             if (!File.Exists(source))
                 throw new FileNotFoundException($"{source} not found", source);
 
-            // Preview audio must be S3V format for the game to play it
-            var format = opt.IsPreview ? AudioFormat.S3V : opt.Format;
-            ImportAudio(source, GetAudioPath(header, format, opt.IsPreview), opt);
+            ImportAudio(source, GetAudioPath(header, opt.Format, opt.IsPreview), opt);
         }
 
         public static void ImportAudio(string source, VoxHeader header, Difficulty difficulty, AudioImportOptions opt = null)

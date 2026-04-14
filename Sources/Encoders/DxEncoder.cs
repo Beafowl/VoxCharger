@@ -95,11 +95,9 @@ namespace VoxCharger
 
             // First, convert OGG to PCM WAV 44.1k 16bit @ 2 channels
             // Note that, MediaFoundationReader is not supported in WinXP and subject to NAudio limitation, refer to their doc for more info
-            WaveStream source;
-            if (Path.GetExtension(fileName) == ".ogg")
-                source = new VorbisWaveReader(fileName);
-            else
-                source = new MediaFoundationReader(fileName);
+            using WaveStream source = Path.GetExtension(fileName) == ".ogg"
+                ? (WaveStream)new VorbisWaveReader(fileName)
+                : new MediaFoundationReader(fileName);
 
             // Initializes memory stream to store our temporary PCM 16bit
             // Use IgnoreDisposeStream, otherwise our memory stream will be disposed when disposing wav writer

@@ -75,9 +75,10 @@ namespace VoxCharger
                     var info = chart.Value;
 
                     // Make sure to reuse 2dx / s3v file for music that share same file
-                    if (string.IsNullOrEmpty(musicFile) || chart.Value.MusicFileName != musicFile)
+                    // Compare against the original source music path, not ChartInfo.MusicFileName
+                    string music = Path.Combine(Path.GetDirectoryName(info.FileName) ?? "", info.Source.MusicFileName);
+                    if (string.IsNullOrEmpty(musicFile) || music != musicFile)
                     {
-                        string music = Path.Combine(Path.GetDirectoryName(info.FileName) ?? "", info.Source.MusicFileName);
                         if (File.Exists(music))
                         {
                             string tmp = Path.Combine(
@@ -124,6 +125,15 @@ namespace VoxCharger
                         }
                     }
 
+                    // Build preview options with KSH preview offset if not already specified
+                    var previewOptions = (importOptions ?? AudioImportOptions.Default).AsPreview();
+                    if (previewOptions.PreviewOffset == 0)
+                    {
+                        var src = charts.Values.Select(c => c.Source).FirstOrDefault(s => s != null && s.PreviewOffset > 0);
+                        if (src != null)
+                            previewOptions.PreviewOffset = src.PreviewOffset / 1000;
+                    }
+
                     // Import all music assets
                     AssetManager.ImportVox(header);
 
@@ -131,7 +141,7 @@ namespace VoxCharger
                     if (!unique)
                     {
                         AssetManager.ImportAudio(musicFile, header, importOptions);
-                        AssetManager.ImportAudio(musicFile, header, (importOptions ?? AudioImportOptions.Default).AsPreview());
+                        AssetManager.ImportAudio(musicFile, header, previewOptions);
                     }
 
                     var highest = charts.Max(e => e.Key);
@@ -144,7 +154,7 @@ namespace VoxCharger
 
                             // Use shared preview using highest level music file
                             if (entry.Key == highest)
-                                AssetManager.ImportAudio(chart.MusicFileName, header, (importOptions ?? AudioImportOptions.Default).AsPreview());
+                                AssetManager.ImportAudio(chart.MusicFileName, header, previewOptions);
                         }
 
                         if (chart.Header.Jacket != null)

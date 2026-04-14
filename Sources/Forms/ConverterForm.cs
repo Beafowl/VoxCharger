@@ -573,7 +573,7 @@ namespace VoxCharger
 
                 var importOptions = new AudioImportOptions
                 {
-                    Format        = AudioFormat.Iidx,
+                    Format        = AudioFormat.S3V,
                     PreviewOffset = PreviewTimePicker.Value.Minute * 60 + PreviewTimePicker.Value.Second
                 };
 

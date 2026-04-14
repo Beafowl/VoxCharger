@@ -337,8 +337,17 @@ namespace VoxCharger
                                 // Create header with server-assigned music ID
                                 var header = ksh.ToHeader();
                                 header.Id = song.music_id;
+
+                                // Validate music ID against game's internal database
+                                // to avoid conflicts with official songs that would crash the game
+                                if (!AssetManager.ValidateMusicId(header.Id))
+                                {
+                                    header.Id = AssetManager.GetNextMusicId();
+                                    errors.Add($"{song.title}: Music ID {song.music_id} conflicts with game data, reassigned to {header.Id}");
+                                }
+
                                 header.Ascii = SanitizeAscii(song.title ?? "remote");
-                                header.Version = GameVersion.VividWave;
+                                header.Version = GameVersion.Nabla;
                                 header.InfVersion = InfiniteVersion.Mxm;
                                 header.GenreId = 16;
                                 header.Levels = new Dictionary<Difficulty, VoxLevelHeader>();
@@ -417,7 +426,7 @@ namespace VoxCharger
             var sb = new StringBuilder();
             foreach (char c in title.ToLower())
             {
-                if (char.IsLetterOrDigit(c))
+                if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
                     sb.Append(c);
                 else if (c == ' ')
                     sb.Append('_');
