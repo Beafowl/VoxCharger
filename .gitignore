@@ -254,3 +254,6 @@ ModelManifest.xml
 env/
 venv/
 __pycache__/
+
+# Claude Code local settings
+.claude/
