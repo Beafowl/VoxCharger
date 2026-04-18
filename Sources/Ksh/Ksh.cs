@@ -893,60 +893,71 @@ namespace VoxCharger
 
             var toRemove = new HashSet<Event.Laser>();
 
+            // We cap by "laser objects" — a logical event at one (measure,
+            // beat, offset). A slam is 2 events (Start + End) at the SAME
+            // tick; a normal tick is 1 event. Counting raw events would let
+            // a slam-dense measure like 45 slams (= 90 events) sail under
+            // any per-event cap because every event is flagged Start or
+            // End. Counting "time positions" collapses slams to 1 unit each,
+            // which matches the player's processing load.
             foreach (var kv in byTrack)
             {
-                // Cap A: cluster-busting slams.
-                var slamClusters = kv.Value
-                    .Where(l => l.IsLaserSlam)
-                    .GroupBy(l => (l.Time.Measure, l.Time.Beat))
-                    .Where(g => g.Count() > maxSlamsPerBeat);
+                var byTick = kv.Value
+                    .GroupBy(l => (l.Time.Measure, l.Time.Beat, l.Time.Offset))
+                    .ToList();
 
-                foreach (var g in slamClusters)
+                // Cap A: slam clusters per beat. A slam-pair ticks group has
+                // 2 events (Start + End) at the same offset. We count groups
+                // that look like slams (>=2 events at same tick) per beat.
+                var slamGroupsByBeat = byTick
+                    .Where(g => g.Count() >= 2 || g.Any(l => l.IsLaserSlam))
+                    .GroupBy(g => (g.Key.Measure, g.Key.Beat))
+                    .Where(bg => bg.Count() > maxSlamsPerBeat);
+
+                foreach (var bg in slamGroupsByBeat)
                 {
-                    var ordered = g.OrderBy(l => l.Time.Offset).ToList();
-                    int kept = 0;
-                    foreach (var e in ordered)
+                    var orderedGroups = bg.OrderBy(g => g.Key.Offset).ToList();
+                    // Keep the first maxSlamsPerBeat groups, drop the rest.
+                    for (int i = maxSlamsPerBeat; i < orderedGroups.Count; i++)
                     {
-                        // Always keep Start/End so the segment stays valid.
-                        if (e.Flag == Event.LaserFlag.Start || e.Flag == Event.LaserFlag.End)
-                        {
-                            kept++;
-                            continue;
-                        }
-                        if (kept < maxSlamsPerBeat) { kept++; continue; }
-                        toRemove.Add(e);
+                        foreach (var e in orderedGroups[i])
+                            toRemove.Add(e);
                     }
                 }
 
-                // Cap B: per-measure total events (excluding anything already dropped).
-                var survivorsByMeasure = kv.Value
+                // Cap B: total laser *objects* (time positions) per measure.
+                // After Cap A, re-bucket survivors and enforce the cap.
+                var survivorGroups = kv.Value
                     .Where(l => !toRemove.Contains(l))
-                    .GroupBy(l => l.Time.Measure)
-                    .Where(g => g.Count() > maxEventsPerMeasure);
+                    .GroupBy(l => (l.Time.Measure, l.Time.Beat, l.Time.Offset))
+                    .ToList();
 
-                foreach (var g in survivorsByMeasure)
+                var perMeasureGroups = survivorGroups
+                    .GroupBy(g => g.Key.Measure)
+                    .Where(mg => mg.Count() > maxEventsPerMeasure);
+
+                foreach (var mg in perMeasureGroups)
                 {
-                    var ordered = g.OrderBy(l => l.Time.Beat).ThenBy(l => l.Time.Offset).ToList();
-                    int total = ordered.Count;
+                    var orderedGroups = mg
+                        .OrderBy(g => g.Key.Beat)
+                        .ThenBy(g => g.Key.Offset)
+                        .ToList();
+                    int total = orderedGroups.Count;
                     int keep  = maxEventsPerMeasure;
 
-                    // Uniform-sample indices to keep.
-                    var keepSet = new HashSet<Event.Laser>();
+                    // Uniform-sample group indices to keep.
+                    var keepIdx = new HashSet<int>();
                     for (int i = 0; i < keep; i++)
                     {
                         int idx = (int)((double)i * total / keep);
                         if (idx >= total) idx = total - 1;
-                        keepSet.Add(ordered[idx]);
+                        keepIdx.Add(idx);
                     }
-                    // Always keep Start/End so we don't orphan a segment.
-                    foreach (var e in ordered)
+
+                    for (int i = 0; i < total; i++)
                     {
-                        if (e.Flag == Event.LaserFlag.Start || e.Flag == Event.LaserFlag.End)
-                            keepSet.Add(e);
-                    }
-                    foreach (var e in ordered)
-                    {
-                        if (!keepSet.Contains(e))
+                        if (keepIdx.Contains(i)) continue;
+                        foreach (var e in orderedGroups[i])
                             toRemove.Add(e);
                     }
                 }
@@ -954,7 +965,7 @@ namespace VoxCharger
 
             if (toRemove.Count > 0)
             {
-                Console.WriteLine($"[sanitize-lasers] thinned {toRemove.Count} laser event(s) (caps: {maxEventsPerMeasure}/measure, {maxSlamsPerBeat} slams/beat)");
+                Console.WriteLine($"[sanitize-lasers] thinned {toRemove.Count} laser event(s) (caps: {maxEventsPerMeasure} objects/measure, {maxSlamsPerBeat} slams/beat)");
                 foreach (var e in toRemove)
                     Events.Remove(e);
             }
