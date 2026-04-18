@@ -157,18 +157,7 @@ namespace VoxCharger
                 Console.WriteLine($"Initializing AssetManager with game path: {gamePath}");
                 AssetManager.Initialize(gamePath);
 
-                // Load or create mix
-                string mixPath = Path.Combine(gamePath, "data_mods", mixName);
-                if (Directory.Exists(mixPath) && File.Exists(Path.Combine(mixPath, "others", "music_db.merged.xml")))
-                {
-                    Console.WriteLine($"Loading existing mix: {mixName}");
-                    AssetManager.LoadMix(mixName);
-                }
-                else
-                {
-                    Console.WriteLine($"Creating new mix: {mixName}");
-                    AssetManager.CreateMix(mixName);
-                }
+                LoadOrRepairMix(gamePath, mixName);
 
                 // Parse the main KSH file
                 Console.WriteLine($"Parsing: {kshPath}");
@@ -299,11 +288,7 @@ namespace VoxCharger
             {
                 AssetManager.Initialize(gamePath);
 
-                string mixPath = Path.Combine(gamePath, "data_mods", mixName);
-                if (Directory.Exists(mixPath) && File.Exists(Path.Combine(mixPath, "others", "music_db.merged.xml")))
-                    AssetManager.LoadMix(mixName);
-                else
-                    AssetManager.CreateMix(mixName);
+                LoadOrRepairMix(gamePath, mixName);
 
                 // Find all song folders (each should contain .ksh files)
                 var songFolders = Directory.GetDirectories(inputDir)
@@ -408,6 +393,7 @@ namespace VoxCharger
             {
                 Console.Error.WriteLine($"Error: {ex.Message}");
                 if (DebugMode) Console.Error.WriteLine(ex.StackTrace);
+                Environment.ExitCode = 1;
             }
         }
 
@@ -464,11 +450,7 @@ namespace VoxCharger
             {
                 AssetManager.Initialize(gamePath);
 
-                string mixPath = Path.Combine(gamePath, "data_mods", mixName);
-                if (Directory.Exists(mixPath) && File.Exists(Path.Combine(mixPath, "others", "music_db.merged.xml")))
-                    AssetManager.LoadMix(mixName);
-                else
-                    AssetManager.CreateMix(mixName);
+                LoadOrRepairMix(gamePath, mixName);
 
                 Console.WriteLine($"Loaded manifest: {entries.Count} chart(s)");
                 Console.WriteLine();
@@ -593,6 +575,7 @@ namespace VoxCharger
             {
                 Console.Error.WriteLine($"Error: {ex.Message}");
                 if (DebugMode) Console.Error.WriteLine(ex.StackTrace);
+                Environment.ExitCode = 1;
             }
         }
 
@@ -694,6 +677,38 @@ namespace VoxCharger
             }
 
             RadarCalibrator.Calibrate(gameData, csv);
+        }
+
+        // Load the mix if it's already on disk; if the directory exists but its
+        // music_db.merged.xml is missing (a partial / interrupted prior run),
+        // repair it by writing a fresh empty db then load it. Without this
+        // step CreateMix throws "Mix directory is already exists" — and the
+        // exception caught by the surrounding try/catch leaves VoxCharger
+        // exiting 0 with no song folder written, which the asphyxia caller
+        // misreads as success.
+        private static void LoadOrRepairMix(string gamePath, string mixName)
+        {
+            string mixPath = Path.Combine(gamePath, "data_mods", mixName);
+            string mdbFile = Path.Combine(mixPath, "others", "music_db.merged.xml");
+
+            if (!Directory.Exists(mixPath))
+            {
+                Console.WriteLine($"Creating new mix: {mixName}");
+                AssetManager.CreateMix(mixName);
+                return;
+            }
+
+            if (!File.Exists(mdbFile))
+            {
+                Console.WriteLine($"Repairing mix: {mixName} (writing empty music_db.merged.xml)");
+                Directory.CreateDirectory(Path.Combine(mixPath, "graphics", "s_jacket00_ifs"));
+                Directory.CreateDirectory(Path.Combine(mixPath, "music"));
+                Directory.CreateDirectory(Path.Combine(mixPath, "others"));
+                File.WriteAllText(mdbFile, "<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><mdb></mdb>");
+            }
+
+            Console.WriteLine($"Loading existing mix: {mixName}");
+            AssetManager.LoadMix(mixName);
         }
 
         private static void PrintUsage()
