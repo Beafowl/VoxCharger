@@ -507,52 +507,80 @@ namespace VoxCharger
                 int parseErrors = sorted.Count(s => s.error != null);
                 Console.WriteLine($"  Parsed: {sorted.Count - parseErrors} OK, {parseErrors} errors");
 
-                // Phase 2: Import sequentially (AssetManager is not thread-safe)
+                // Phase 2: Convert audio + encode assets in parallel. The heavy
+                // work inside exporter.Export + Action (ffmpeg loudnorm, 2dx
+                // encode, jacket resize, vox serialize) writes to per-music-id
+                // paths and has no shared mutable state between charts, so it
+                // parallelizes cleanly. Only the final Headers.Add must stay
+                // serial — that's done in the post-pass below in deterministic
+                // (music-id) order.
+                //
+                // Default concurrency is min(CPU count, 4). Higher than that
+                // mostly just thrashes the disk — ffmpeg already uses multiple
+                // threads per invocation.
                 Console.WriteLine("Phase 2: Importing assets...");
-                int success = 0;
-                int failed = 0;
+                int maxDegree = Math.Max(1, Math.Min(Environment.ProcessorCount, 4));
+                Console.WriteLine($"  (parallel, up to {maxDegree} at a time)");
 
+                var phase2Results = new ConcurrentDictionary<int, (VoxHeader header, string diffs, string error)>();
+
+                Parallel.ForEach(
+                    sorted.Where(s => s.error == null),
+                    new ParallelOptions { MaxDegreeOfParallelism = maxDegree },
+                    song =>
+                    {
+                        try
+                        {
+                            var header = song.mainKsh.ToHeader();
+                            header.Id = song.mid;
+                            if (!string.IsNullOrEmpty(song.code))
+                                header.Ascii = song.code;
+                            header.Version = GameVersion.Nabla;
+                            header.GenreId = 16;
+                            header.BackgroundId = 0;
+                            header.Levels = new Dictionary<Difficulty, VoxLevelHeader>();
+
+                            var exporter = new Ksh.Exporter(song.mainKsh);
+                            var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
+                            audioOptions.NormalizeLoudness = true;
+                            header.Volume = audioOptions.TargetVolume;
+                            exporter.Export(header, song.charts, null, audioOptions);
+
+                            if (exporter.Action != null)
+                                exporter.Action.Invoke();
+
+                            string diffs = string.Join(", ", song.charts.Select(c => $"{c.Key}:{c.Value.Header.Level}"));
+                            phase2Results[song.mid] = (header, diffs, null);
+                            Console.WriteLine($"  OK   ID {song.mid} [{song.code}] [{diffs}]");
+                        }
+                        catch (Exception ex)
+                        {
+                            phase2Results[song.mid] = (null, null, ex.Message);
+                            Console.Error.WriteLine($"  FAIL ID {song.mid} [{song.code}]: {ex.Message}");
+                            if (DebugMode) Console.Error.WriteLine($"       {ex.StackTrace}");
+                        }
+                    }
+                );
+
+                // Phase 3: record headers serially in mid order (AssetManager
+                // MusicDb isn't thread-safe; this is the only bit that has to
+                // run single-threaded).
+                int success = 0;
+                int failed = sorted.Count(s => s.error != null);
                 foreach (var song in sorted)
                 {
                     if (song.error != null)
                     {
                         Console.WriteLine($"  SKIP ID {song.mid} [{song.code}]: {song.error}");
+                        continue;
+                    }
+                    if (!phase2Results.TryGetValue(song.mid, out var r) || r.error != null)
+                    {
                         failed++;
                         continue;
                     }
-
-                    try
-                    {
-                        var header = song.mainKsh.ToHeader();
-                        header.Id = song.mid;
-                        if (!string.IsNullOrEmpty(song.code))
-                            header.Ascii = song.code;
-                        header.Version = GameVersion.Nabla;
-                        header.GenreId = 16;
-                        header.BackgroundId = 0;
-                        header.Levels = new Dictionary<Difficulty, VoxLevelHeader>();
-
-                        var exporter = new Ksh.Exporter(song.mainKsh);
-                        var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
-                        audioOptions.NormalizeLoudness = true;
-                        header.Volume = audioOptions.TargetVolume;
-                        exporter.Export(header, song.charts, null, audioOptions);
-
-                        if (exporter.Action != null)
-                            exporter.Action.Invoke();
-
-                        AssetManager.Headers.Add(header);
-
-                        string diffs = string.Join(", ", song.charts.Select(c => $"{c.Key}:{c.Value.Header.Level}"));
-                        Console.WriteLine($"  OK   ID {song.mid} [{song.code}] [{diffs}]");
-                        success++;
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.Error.WriteLine($"  FAIL ID {song.mid} [{song.code}]: {ex.Message}");
-                        if (DebugMode) Console.Error.WriteLine($"       {ex.StackTrace}");
-                        failed++;
-                    }
+                    AssetManager.Headers.Add(r.header);
+                    success++;
                 }
 
                 AssetManager.Headers.Save(AssetManager.MdbFilename);
