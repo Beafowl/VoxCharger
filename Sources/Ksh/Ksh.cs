@@ -53,16 +53,6 @@ namespace VoxCharger
             // events for the player — 8/beat is already ridiculous.
             public int MaxLaserSlamsPerBeat { get; set; } = 8;
 
-            // Custom KSH charts fake scroll-speed / camera effects by setting
-            // very high BPMs inside tiny time signatures (e.g. t=3520 with
-            // beat=1/32). KSM reinterprets that as a visual gimmick; the SDVX
-            // engine treats it literally as "the song is now 3520 BPM" and
-            // the chart drifts out of sync with the audio from that point on.
-            // Drop BPM-change events above this threshold so the prior BPM
-            // stays active through the gimmick. Effect is lost, timing
-            // survives. 0 disables the filter.
-            public float MaxRealisticBpm { get; set; } = 600f;
-
             public class SoundFxOptions
             {
                 public bool Chip  { get; set; } = true;
@@ -287,18 +277,6 @@ namespace VoxCharger
                             {
                                 if (!float.TryParse(ts, out float t))
                                     break;
-
-                                // Skip gimmick BPMs above MaxRealisticBpm entirely. Don't
-                                // let them pollute BpmMin/BpmMax either — otherwise the
-                                // music_db header ends up reporting 3520 BPM for a song
-                                // whose audio actually sits around 220.
-                                bool isGimmick = opt.MaxRealisticBpm > 0 && t > opt.MaxRealisticBpm;
-                                if (isGimmick)
-                                {
-                                    if (!value.Contains("-"))
-                                        Console.WriteLine($"[bpm-clamp] skipping gimmick t={t} at measure {time.Measure} beat {time.Beat} (> MaxRealisticBpm {opt.MaxRealisticBpm})");
-                                    continue;
-                                }
 
                                 if (BpmMin == 0f || t < BpmMin)
                                     BpmMin = t;
