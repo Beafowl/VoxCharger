@@ -22,6 +22,19 @@ namespace VoxCharger
         public bool IsPreview     { get; set; } = false;
         public int PreviewOffset  { get; set; } = 0;
 
+        // EBU R128 loudness normalization. When enabled, the source audio is
+        // two-pass loudnorm-ed to TargetLufs before being encoded, so every
+        // chart lands at a consistent in-game level regardless of the source
+        // master. Pair with a fixed VoxHeader.Volume (see TargetVolume).
+        public bool NormalizeLoudness { get; set; } = false;
+        // -9 LUFS roughly matches Konami's stock SDVX masters. The old -14 LUFS
+        // target (Spotify/YouTube's broadcast-safe level) left custom charts
+        // audibly quieter than base songs. TargetTruePeak stays at -1.5 dBTP
+        // so the higher integrated loudness doesn't cause sample clipping.
+        public double TargetLufs      { get; set; } = -9.0;
+        public double TargetTruePeak  { get; set; } = -1.5;
+        public short TargetVolume     { get; set; } = 91;
+
         public static AudioImportOptions WithFormat(AudioFormat format)
         {
             return new AudioImportOptions
@@ -36,9 +49,13 @@ namespace VoxCharger
         {
             return new AudioImportOptions
             {
-                Format        = Format,
-                IsPreview     = true,
-                PreviewOffset = PreviewOffset
+                Format            = Format,
+                IsPreview         = true,
+                PreviewOffset     = PreviewOffset,
+                NormalizeLoudness = NormalizeLoudness,
+                TargetLufs        = TargetLufs,
+                TargetTruePeak    = TargetTruePeak,
+                TargetVolume      = TargetVolume,
             };
         }
     }
