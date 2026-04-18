@@ -76,6 +76,12 @@ namespace VoxCharger
                 return;
             }
 
+            if (input == "--calibrate-radar")
+            {
+                RunCalibrateRadar(argList);
+                return;
+            }
+
             string output = argList.Count > 1 ? argList[1] : null;
 
             if (File.Exists(input))
@@ -206,6 +212,8 @@ namespace VoxCharger
                 // Run the full export pipeline
                 var exporter = new Ksh.Exporter(mainKsh);
                 var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
+                audioOptions.NormalizeLoudness = true;
+                header.Volume = audioOptions.TargetVolume;
                 exporter.Export(header, charts, null, audioOptions);
 
                 // Execute the deferred import action
@@ -236,6 +244,7 @@ namespace VoxCharger
             string gamePath = null;
             string mixName = null;
             int startId = -1;
+            string manifestPath = null;
 
             for (int i = 1; i < argList.Count; i++)
             {
@@ -250,16 +259,31 @@ namespace VoxCharger
                     case "--start-id":
                         if (i + 1 < argList.Count) int.TryParse(argList[++i], out startId);
                         break;
+                    case "--manifest":
+                        if (i + 1 < argList.Count) manifestPath = argList[++i];
+                        break;
                     default:
                         if (inputDir == null) inputDir = argList[i];
                         break;
                 }
             }
 
+            if (manifestPath != null)
+            {
+                if (string.IsNullOrEmpty(gamePath) || string.IsNullOrEmpty(mixName))
+                {
+                    Console.Error.WriteLine("Error: --bulk-import --manifest requires --game-path and --mix");
+                    return;
+                }
+                RunBulkImportFromManifest(manifestPath, gamePath, mixName);
+                return;
+            }
+
             if (string.IsNullOrEmpty(inputDir) || string.IsNullOrEmpty(gamePath) || string.IsNullOrEmpty(mixName))
             {
                 Console.Error.WriteLine("Error: --bulk-import requires <input_dir>, --game-path, and --mix");
                 Console.Error.WriteLine("Usage: VoxCharger.exe --bulk-import <dir_with_song_folders> --game-path <path> --mix <name> [--start-id <id>]");
+                Console.Error.WriteLine("   or: VoxCharger.exe --bulk-import --manifest <file> --game-path <path> --mix <name>");
                 return;
             }
 
@@ -352,6 +376,8 @@ namespace VoxCharger
 
                         var exporter = new Ksh.Exporter(song.mainKsh);
                         var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
+                        audioOptions.NormalizeLoudness = true;
+                        header.Volume = audioOptions.TargetVolume;
                         exporter.Export(header, song.charts, null, audioOptions);
 
                         if (exporter.Action != null)
@@ -372,6 +398,163 @@ namespace VoxCharger
                 }
 
                 // Save DB once at the end
+                AssetManager.Headers.Save(AssetManager.MdbFilename);
+
+                sw.Stop();
+                Console.WriteLine();
+                Console.WriteLine($"Done! {success} imported, {failed} failed in {sw.Elapsed.TotalSeconds:F1}s");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+                if (DebugMode) Console.Error.WriteLine(ex.StackTrace);
+            }
+        }
+
+        // Manifest-driven bulk import. Each line of the manifest is:
+        //   <musicId>\t<musicCode>\t<kshFilePath>
+        // Lines starting with '#' or empty lines are ignored. Each ksh file's
+        // sibling difficulty charts are discovered automatically via
+        // Ksh.Exporter.GetCharts on the file's parent directory.
+        //
+        // Unlike --bulk-import <dir>, the caller assigns specific music IDs per
+        // entry (so an asphyxia reconvert-all can preserve each chart's existing
+        // mid). Existing entries at the same ID are replaced (MusicDb indexes
+        // headers by Id). Phase 1 parses in parallel; Phase 2 imports
+        // sequentially; the DB is saved once at the end.
+        private static void RunBulkImportFromManifest(string manifestPath, string gamePath, string mixName)
+        {
+            if (!File.Exists(manifestPath))
+            {
+                Console.Error.WriteLine($"Error: manifest not found: {manifestPath}");
+                return;
+            }
+
+            var entries = new List<(int mid, string code, string kshPath)>();
+            int lineNo = 0;
+            foreach (var raw in File.ReadAllLines(manifestPath))
+            {
+                lineNo++;
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#")) continue;
+
+                var parts = line.Split('\t');
+                if (parts.Length < 3)
+                {
+                    Console.Error.WriteLine($"manifest line {lineNo}: need 3 tab-separated fields (mid<TAB>code<TAB>kshPath), got {parts.Length}");
+                    continue;
+                }
+                if (!int.TryParse(parts[0].Trim(), out int mid) || mid <= 0)
+                {
+                    Console.Error.WriteLine($"manifest line {lineNo}: invalid music id '{parts[0]}'");
+                    continue;
+                }
+                entries.Add((mid, parts[1].Trim(), parts[2].Trim()));
+            }
+
+            if (entries.Count == 0)
+            {
+                Console.Error.WriteLine("manifest had no valid entries");
+                return;
+            }
+
+            var sw = Stopwatch.StartNew();
+
+            try
+            {
+                AssetManager.Initialize(gamePath);
+
+                string mixPath = Path.Combine(gamePath, "data_mods", mixName);
+                if (Directory.Exists(mixPath) && File.Exists(Path.Combine(mixPath, "others", "music_db.merged.xml")))
+                    AssetManager.LoadMix(mixName);
+                else
+                    AssetManager.CreateMix(mixName);
+
+                Console.WriteLine($"Loaded manifest: {entries.Count} chart(s)");
+                Console.WriteLine();
+
+                // Phase 1: parse KSH files in parallel
+                Console.WriteLine("Phase 1: Parsing charts...");
+                var parsedSongs = new ConcurrentBag<(int mid, string code, string kshPath, Ksh mainKsh, Dictionary<Difficulty, ChartInfo> charts, string error)>();
+
+                Parallel.ForEach(entries, entry =>
+                {
+                    try
+                    {
+                        if (!File.Exists(entry.kshPath))
+                        {
+                            parsedSongs.Add((entry.mid, entry.code, entry.kshPath, null, null, "ksh file not found"));
+                            return;
+                        }
+
+                        var mainKsh = new Ksh();
+                        mainKsh.Parse(entry.kshPath);
+
+                        string folder = Path.GetDirectoryName(Path.GetFullPath(entry.kshPath));
+                        var charts = Ksh.Exporter.GetCharts(folder, mainKsh.Title);
+                        if (charts.Count > 0)
+                            parsedSongs.Add((entry.mid, entry.code, entry.kshPath, mainKsh, charts, null));
+                        else
+                            parsedSongs.Add((entry.mid, entry.code, entry.kshPath, null, null, "No charts found"));
+                    }
+                    catch (Exception ex)
+                    {
+                        parsedSongs.Add((entry.mid, entry.code, entry.kshPath, null, null, ex.Message));
+                    }
+                });
+
+                var sorted = parsedSongs.OrderBy(s => s.mid).ToList();
+                int parseErrors = sorted.Count(s => s.error != null);
+                Console.WriteLine($"  Parsed: {sorted.Count - parseErrors} OK, {parseErrors} errors");
+
+                // Phase 2: Import sequentially (AssetManager is not thread-safe)
+                Console.WriteLine("Phase 2: Importing assets...");
+                int success = 0;
+                int failed = 0;
+
+                foreach (var song in sorted)
+                {
+                    if (song.error != null)
+                    {
+                        Console.WriteLine($"  SKIP ID {song.mid} [{song.code}]: {song.error}");
+                        failed++;
+                        continue;
+                    }
+
+                    try
+                    {
+                        var header = song.mainKsh.ToHeader();
+                        header.Id = song.mid;
+                        if (!string.IsNullOrEmpty(song.code))
+                            header.Ascii = song.code;
+                        header.Version = GameVersion.Nabla;
+                        header.GenreId = 16;
+                        header.BackgroundId = 0;
+                        header.Levels = new Dictionary<Difficulty, VoxLevelHeader>();
+
+                        var exporter = new Ksh.Exporter(song.mainKsh);
+                        var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
+                        audioOptions.NormalizeLoudness = true;
+                        header.Volume = audioOptions.TargetVolume;
+                        exporter.Export(header, song.charts, null, audioOptions);
+
+                        if (exporter.Action != null)
+                            exporter.Action.Invoke();
+
+                        AssetManager.Headers.Add(header);
+
+                        string diffs = string.Join(", ", song.charts.Select(c => $"{c.Key}:{c.Value.Header.Level}"));
+                        Console.WriteLine($"  OK   ID {song.mid} [{song.code}] [{diffs}]");
+                        success++;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"  FAIL ID {song.mid} [{song.code}]: {ex.Message}");
+                        if (DebugMode) Console.Error.WriteLine($"       {ex.StackTrace}");
+                        failed++;
+                    }
+                }
+
                 AssetManager.Headers.Save(AssetManager.MdbFilename);
 
                 sw.Stop();
@@ -464,6 +647,27 @@ namespace VoxCharger
             Console.WriteLine($"Done. {success} converted, {failed} failed.");
         }
 
+        private static void RunCalibrateRadar(List<string> argList)
+        {
+            string gameData = null;
+            string csv      = null;
+            for (int i = 1; i < argList.Count; i++)
+            {
+                if (argList[i] == "--csv" && i + 1 < argList.Count) { csv = argList[++i]; continue; }
+                if (gameData == null) gameData = argList[i];
+            }
+
+            if (string.IsNullOrEmpty(gameData))
+            {
+                Console.Error.WriteLine("Error: --calibrate-radar requires a game-data directory");
+                Console.Error.WriteLine("Usage: VoxCharger.exe --calibrate-radar <game_data_dir> [--csv <output.csv>]");
+                Console.Error.WriteLine("  <game_data_dir> should contain `others/music_db.xml` and `music/` subdirs.");
+                return;
+            }
+
+            RadarCalibrator.Calibrate(gameData, csv);
+        }
+
         private static void PrintUsage()
         {
             Console.WriteLine("VoxCharger - KSH to VOX Converter");
@@ -482,8 +686,16 @@ namespace VoxCharger
             Console.WriteLine();
             Console.WriteLine("Bulk Import:");
             Console.WriteLine("  VoxCharger.exe --bulk-import <dir> --game-path <path> --mix <name> [--start-id <id>]");
-            Console.WriteLine("  Imports all song folders in <dir>. Each subfolder should contain .ksh files.");
-            Console.WriteLine("  Parsing is parallelized for speed.");
+            Console.WriteLine("    Imports all song folders in <dir>. Each subfolder should contain .ksh files.");
+            Console.WriteLine("    Parsing is parallelized; music ids are auto-assigned from --start-id.");
+            Console.WriteLine("  VoxCharger.exe --bulk-import --manifest <file> --game-path <path> --mix <name>");
+            Console.WriteLine("    Imports charts listed in manifest. Each line: <musicId>\\t<musicCode>\\t<kshPath>");
+            Console.WriteLine("    Specific ids are preserved (useful for reconverts).");
+            Console.WriteLine();
+            Console.WriteLine("Radar Calibration:");
+            Console.WriteLine("  VoxCharger.exe --calibrate-radar <game_data_dir> [--csv <output.csv>]");
+            Console.WriteLine("  Fits RadarCalculator coefficients against official Konami radar values.");
+            Console.WriteLine("  <game_data_dir> should contain `others/music_db.xml` and `music/`.");
             Console.WriteLine();
             Console.WriteLine("Options:");
             Console.WriteLine("  -h, --help    Show this help message");
