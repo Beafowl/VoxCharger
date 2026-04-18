@@ -48,6 +48,25 @@ namespace VoxCharger
         private const double NotesScale = 6.0;  // placeholder; run --calibrate-radar for a fitted value
         private const double PeakScale  = 6.0;  // placeholder; run --calibrate-radar for a fitted value
 
+        // Kept for reference / rollback: the original multivariate regression
+        // weights for Notes and Peak (fitted against music_db.xml, n=8280).
+        // To revert the direct formulas, restore these as `static readonly
+        // double[]` and call `Predict(features, ...)` from Calculate().
+        /*
+        private static readonly double[] NotesWeights = // R²=0.906, RMSE=11.07
+        {
+            -5.156511, 8.487934, -20.390941, 49.107870, -3.789350, -21.710287, -8.417644, -15.210130,
+             1.131977, 2.175205, 0.125313, 0.330022, -0.823263, 1.137743, 0.013049, 4.820540,
+           258.217045, -38.961670, 1.992591
+        };
+        private static readonly double[] PeakWeights = // R²=0.854, RMSE=13.14
+        {
+            -3.004106, 1.932366, -12.538507, 44.955565, -1.512857, -2.009590, -4.888202, 7.057453,
+            -0.050425, -7.433806, 0.889987, 1.104077, -0.345250, 1.682488, -0.018459, 4.303914,
+           118.692082, -37.132191, 2.703601
+        };
+        */
+
         // Remaining axes still use multivariate regression — their definitions
         // (speed changes, hand crossings, laser-while-button coverage) don't
         // reduce to a single feature cleanly. Fitted against music_db.xml
