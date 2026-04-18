@@ -36,6 +36,23 @@ namespace VoxCharger
 
         public class ParseOption
         {
+            // After parsing, thin laser density where it exceeds what the
+            // SDVX engine handles reliably. Custom charts occasionally ship
+            // with thousands of slams / laser events packed into a few beats;
+            // the player's internal tick counter drifts out of sync with
+            // audio after such a cluster and the rest of the chart plays
+            // wrong. True = enforce caps (default); false = pass KSH through
+            // untouched.
+            public bool SanitizeLasers { get; set; } = true;
+
+            // Max total laser events (Start + Tick + End) per track per
+            // measure. 32 is in line with the densest official charts.
+            public int MaxLaserEventsPerMeasure { get; set; } = 32;
+
+            // Max slam events per track per beat. Slams are the heaviest
+            // events for the player — 8/beat is already ridiculous.
+            public int MaxLaserSlamsPerBeat { get; set; } = 8;
+
             public class SoundFxOptions
             {
                 public bool Chip  { get; set; } = true;
@@ -106,7 +123,7 @@ namespace VoxCharger
                 Illustrator = Illustrator,
                 Effector    = Effector,
                 Level       = Level,
-                Radar       = RadarCalculator.Calculate(Events)
+                Radar       = RadarCalculator.Calculate(Events, Level)
             };
         }
 
@@ -487,12 +504,16 @@ namespace VoxCharger
                             switch (prop)
                             {
                                 case "zoom_top":
+                                    // CAM_RotX: soft-clip via tanh so values in the [-100, 100]
+                                    // KSM range stay near-linear, while extremes (e.g. 150+)
+                                    // saturate at ±1.0 instead of producing lane angles that
+                                    // Konami's own charts never use.
                                     work = Camera.WorkType.Rotation;
-                                    cameraVal /= 100.0f;
+                                    cameraVal = (float)Math.Tanh(cameraVal / 100.0f);
                                     break;
                                 case "zoom_bottom":
                                     work = Camera.WorkType.Radian;
-                                    cameraVal /= -100.0f;
+                                    cameraVal = (float)Math.Tanh(cameraVal / -100.0f);
                                     break;
                                 case "tilt":
                                     work = Camera.WorkType.Tilt;
@@ -838,6 +859,105 @@ namespace VoxCharger
             }
 
             MeasureCount = measure;
+
+            if (opt.SanitizeLasers)
+                SanitizeLasers(opt.MaxLaserEventsPerMeasure, opt.MaxLaserSlamsPerBeat);
+        }
+
+        // Thin excessive laser density in-place on the parsed event list. Two
+        // caps, applied per laser track (L and R):
+        //
+        //   Cap A - max slams per beat. Any slam events beyond the cap in the
+        //           same (measure, beat) are removed, preferring Tick-flag
+        //           events over Start/End so the segment structure survives.
+        //
+        //   Cap B - max total laser events (Start + Tick + End) per measure.
+        //           After Cap A, any measure still over the cap is thinned by
+        //           uniform sampling; Start and End flags are always kept so
+        //           we never orphan a laser segment.
+        //
+        // The caller logs how many events were removed. Permanent on-disk data
+        // is untouched — we only modify the in-memory Events list.
+        private void SanitizeLasers(int maxEventsPerMeasure, int maxSlamsPerBeat)
+        {
+            var byTrack = new Dictionary<Event.LaserTrack, List<Event.Laser>>();
+            foreach (var ev in Events)
+            {
+                if (ev is Event.Laser l)
+                {
+                    if (!byTrack.ContainsKey(l.Track))
+                        byTrack[l.Track] = new List<Event.Laser>();
+                    byTrack[l.Track].Add(l);
+                }
+            }
+
+            var toRemove = new HashSet<Event.Laser>();
+
+            foreach (var kv in byTrack)
+            {
+                // Cap A: cluster-busting slams.
+                var slamClusters = kv.Value
+                    .Where(l => l.IsLaserSlam)
+                    .GroupBy(l => (l.Time.Measure, l.Time.Beat))
+                    .Where(g => g.Count() > maxSlamsPerBeat);
+
+                foreach (var g in slamClusters)
+                {
+                    var ordered = g.OrderBy(l => l.Time.Offset).ToList();
+                    int kept = 0;
+                    foreach (var e in ordered)
+                    {
+                        // Always keep Start/End so the segment stays valid.
+                        if (e.Flag == Event.LaserFlag.Start || e.Flag == Event.LaserFlag.End)
+                        {
+                            kept++;
+                            continue;
+                        }
+                        if (kept < maxSlamsPerBeat) { kept++; continue; }
+                        toRemove.Add(e);
+                    }
+                }
+
+                // Cap B: per-measure total events (excluding anything already dropped).
+                var survivorsByMeasure = kv.Value
+                    .Where(l => !toRemove.Contains(l))
+                    .GroupBy(l => l.Time.Measure)
+                    .Where(g => g.Count() > maxEventsPerMeasure);
+
+                foreach (var g in survivorsByMeasure)
+                {
+                    var ordered = g.OrderBy(l => l.Time.Beat).ThenBy(l => l.Time.Offset).ToList();
+                    int total = ordered.Count;
+                    int keep  = maxEventsPerMeasure;
+
+                    // Uniform-sample indices to keep.
+                    var keepSet = new HashSet<Event.Laser>();
+                    for (int i = 0; i < keep; i++)
+                    {
+                        int idx = (int)((double)i * total / keep);
+                        if (idx >= total) idx = total - 1;
+                        keepSet.Add(ordered[idx]);
+                    }
+                    // Always keep Start/End so we don't orphan a segment.
+                    foreach (var e in ordered)
+                    {
+                        if (e.Flag == Event.LaserFlag.Start || e.Flag == Event.LaserFlag.End)
+                            keepSet.Add(e);
+                    }
+                    foreach (var e in ordered)
+                    {
+                        if (!keepSet.Contains(e))
+                            toRemove.Add(e);
+                    }
+                }
+            }
+
+            if (toRemove.Count > 0)
+            {
+                Console.WriteLine($"[sanitize-lasers] thinned {toRemove.Count} laser event(s) (caps: {maxEventsPerMeasure}/measure, {maxSlamsPerBeat} slams/beat)");
+                foreach (var e in toRemove)
+                    Events.Remove(e);
+            }
         }
 
         private static string GetInlineParamName(string fxType)
