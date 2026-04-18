@@ -160,8 +160,13 @@ namespace VoxCharger
                 info.AppendChild(createMetaElement(doc, "artist_name",       header.Artist, string.Empty));
                 info.AppendChild(createMetaElement(doc, "artist_yomigana",   header.ArtistYomigana, string.Empty));
                 info.AppendChild(createMetaElement(doc, "ascii",             header.Ascii, string.Empty));
-                info.AppendChild(createMetaElement(doc, "bpm_max",           header.BpmMax.ToString("000.00").Replace(".", string.Empty).Replace(",", string.Empty), "u32"));
-                info.AppendChild(createMetaElement(doc, "bpm_min",           header.BpmMin.ToString("000.00").Replace(".", string.Empty).Replace(",", string.Empty), "u32"));
+                // BPM stored as (bpm * 100) in a u32 field. The old path formatted as
+                // "000.00" then stripped the decimal separator which left leading zeros
+                // for BPMs under 100 (e.g. 63.8 -> "06380"). Konami's strict prop parser
+                // then read the value as invalid octal and aborted music_db parsing with
+                // 80092209. Emit the integer directly — no zero-padding.
+                info.AppendChild(createMetaElement(doc, "bpm_max",           ((uint)Math.Round(header.BpmMax * 100)).ToString(), "u32"));
+                info.AppendChild(createMetaElement(doc, "bpm_min",           ((uint)Math.Round(header.BpmMin * 100)).ToString(), "u32"));
                 info.AppendChild(createMetaElement(doc, "distribution_date", header.DistributionDate.ToString("yyyyMMdd"), "u32"));
                 info.AppendChild(createMetaElement(doc, "volume",            header.Volume.ToString(), "u16"));
                 info.AppendChild(createMetaElement(doc, "bg_no",             header.BackgroundId.ToString(), "u16"));
