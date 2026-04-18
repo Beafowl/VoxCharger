@@ -142,9 +142,20 @@ namespace VoxCharger
             };
 
             using var process = Process.Start(info);
-            string stdOut = process.StandardOutput.ReadToEnd();
-            string stdErr = process.StandardError.ReadToEnd();
+
+            // Drain stdout and stderr concurrently. The previous
+            // ReadToEnd-then-ReadToEnd pattern deadlocks whenever ffmpeg fills
+            // the stderr pipe buffer (~4-32 KB) before the parent starts
+            // reading it — which is basically always for a real audio file,
+            // because ffmpeg dumps progress / loudnorm stats to stderr while
+            // stdout stays near-empty. Under Parallel.ForEach the deadlock was
+            // hitting every bulk run. Read both streams in parallel so neither
+            // can block the child.
+            var outTask = System.Threading.Tasks.Task.Run(() => process.StandardOutput.ReadToEnd());
+            var errTask = System.Threading.Tasks.Task.Run(() => process.StandardError.ReadToEnd());
             process.WaitForExit();
+            string stdOut = outTask.Result;
+            string stdErr = errTask.Result;
 
             if (process.ExitCode != 0)
             {
