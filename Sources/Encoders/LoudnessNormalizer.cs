@@ -92,32 +92,37 @@ namespace VoxCharger
             string args = $"-hide_banner -y -i \"{inputFileName}\" -af \"{volumeFilter}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{output}\"";
             Run(args);
 
-            // Apply KSH music offset to the audio, not to the chart. This keeps
-            // every chart event exactly on its KSH tick position — notes land
-            // cleanly on the beat grid in-game instead of being shifted off by
-            // the ms->ticks remainder (1400 ms @ 175 BPM = 196 ticks = 4 beats
-            // + 4 ticks leftover).
+            // Apply KSH music offset to the audio, not to the chart. Keeps
+            // every chart event exactly on its KSH tick position — notes
+            // land on the beat grid in-game. The sign convention here was
+            // confirmed empirically: on Roar of Chronos (o=1400, 175 BPM),
+            // shifting chart positions LATER by 196 ticks produced correct
+            // alignment — which is equivalent to moving audio EARLIER by
+            // the same amount, i.e. trimming 1400 ms off the audio start.
+            //   Positive o= -> trim N ms from the audio front
+            //   Negative o= -> pad N ms of silence to the audio front
             if (musicOffsetMs != 0)
             {
                 string shifted = Path.Combine(Path.GetTempPath(), $"vc_offset_{Guid.NewGuid():N}.wav");
                 string shiftArgs;
                 if (musicOffsetMs > 0)
                 {
-                    // Positive offset: pad front with silence. adelay takes ms
-                    // per channel — two values for stereo.
-                    shiftArgs = $"-hide_banner -y -i \"{output}\" -af \"adelay={musicOffsetMs}|{musicOffsetMs}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{shifted}\"";
-                }
-                else
-                {
-                    // Negative offset: seek-trim from the start. -ss before -i
-                    // uses fast keyframe seek on decoded audio (accurate in WAV
-                    // since every sample is a "keyframe"), expressed in seconds.
-                    double trimSec = Math.Abs(musicOffsetMs) / 1000.0;
+                    // Positive offset: seek-trim from the start. -ss before
+                    // -i uses fast keyframe seek; since WAV is PCM, every
+                    // sample is a keyframe and the seek is sample-accurate.
+                    double trimSec = musicOffsetMs / 1000.0;
                     shiftArgs = string.Format(
                         CultureInfo.InvariantCulture,
                         "-hide_banner -y -ss {0:0.####} -i \"{1}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{2}\"",
                         trimSec, output, shifted
                     );
+                }
+                else
+                {
+                    // Negative offset: pad front with silence. adelay takes
+                    // ms per channel — two values for stereo.
+                    int padMs = Math.Abs(musicOffsetMs);
+                    shiftArgs = $"-hide_banner -y -i \"{output}\" -af \"adelay={padMs}|{padMs}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{shifted}\"";
                 }
                 Run(shiftArgs);
                 try { File.Delete(output); } catch { }
