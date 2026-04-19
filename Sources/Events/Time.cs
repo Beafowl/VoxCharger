@@ -130,6 +130,27 @@ namespace VoxCharger
             return new Time(measure, beat, offset);
         }
 
+        // Lexicographic order on (Measure, Beat, Offset). Only meaningful when
+        // both Times share a time signature basis, but BPM/signature lookups
+        // only compare positions authored in the same chart so this is fine.
+        public static bool operator <=(Time a, Time b)
+        {
+            if (ReferenceEquals(a, null) || ReferenceEquals(b, null))
+                return ReferenceEquals(a, b);
+            if (a.Measure != b.Measure) return a.Measure < b.Measure;
+            if (a.Beat    != b.Beat)    return a.Beat    < b.Beat;
+            return a.Offset <= b.Offset;
+        }
+
+        public static bool operator >=(Time a, Time b)
+        {
+            if (ReferenceEquals(a, null) || ReferenceEquals(b, null))
+                return ReferenceEquals(a, b);
+            if (a.Measure != b.Measure) return a.Measure > b.Measure;
+            if (a.Beat    != b.Beat)    return a.Beat    > b.Beat;
+            return a.Offset >= b.Offset;
+        }
+
         public static bool operator ==(Time a, Time b)
         {
             if (ReferenceEquals(a, null) || ReferenceEquals(b, null))
