@@ -628,9 +628,11 @@ namespace VoxCharger
                         rangeRight = 1;
 
                     float position = measure * 192f;
-                    if (measure > 1 && MusicOffset != 0 && InitialBpm > 0)
-                        position -= MusicOffset * InitialBpm * 48f / 60000f;
-
+                    // MusicOffset is applied to the *audio* during encode
+                    // (LoudnessNormalizer.Normalize via AudioImportOptions.
+                    // MusicOffsetMs), not to chart positions. Applying it
+                    // here too would double-shift every event after measure 1
+                    // and also introduce sub-beat residues.
                     time = Time.FromOffset(position, signature);
                     for (int j = i + 1; j < lines.Length; j++)
                     {
@@ -901,6 +903,35 @@ namespace VoxCharger
             }
 
             MeasureCount = measure;
+
+            // Some KSH charts append massive trailing padding after the last
+            // real gameplay event — Internet Yamero's MXM ends with a
+            // 'beat=128/1' measure that adds ~166 seconds of silence, pushing
+            // the VOX EndPosition well past the audio duration. In-game the
+            // song can't auto-end because the chart still thinks it's
+            // running; the player is stuck on a silent track.
+            //
+            // Heuristic: only trim when a late-in-the-chart signature change
+            // introduces an extreme ratio. 'Late' = within the last 5 measures
+            // (padding hacks always sit at the tail). 'Extreme' = >= 16 whole
+            // notes per measure (4/4=1, 3/8=0.375, 50/4=12.5, 128/1=128 — so
+            // a 128/1 trips, a normal 50/4 measure doesn't). A legit 16/1 or
+            // larger in the middle of a chart isn't touched.
+            int padStartMeasure = int.MaxValue;
+            foreach (var ev in Events)
+            {
+                if (ev is Event.TimeSignature sig && sig.Note > 0 && sig.Time.Measure > MeasureCount - 5)
+                {
+                    double wholesPerMeasure = (double)sig.Beat / sig.Note;
+                    if (wholesPerMeasure >= 16 && sig.Time.Measure < padStartMeasure)
+                        padStartMeasure = sig.Time.Measure;
+                }
+            }
+            if (padStartMeasure != int.MaxValue && padStartMeasure <= MeasureCount)
+            {
+                Console.WriteLine($"[ksh] Trimming trailing padding measure(s) starting at {padStartMeasure}: MeasureCount {MeasureCount} -> {padStartMeasure - 1}");
+                MeasureCount = padStartMeasure - 1;
+            }
 
             if (opt.SanitizeLasers)
                 SanitizeLasers(opt.MaxLaserEventsPerMeasure, opt.MaxLaserSlamsPerBeat);
