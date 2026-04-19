@@ -66,18 +66,30 @@ namespace VoxCharger
 
             var stats = Measure(inputFileName, targetLufs, targetTruePeak);
 
-            string output = Path.Combine(Path.GetTempPath(), $"vc_loudnorm_{Guid.NewGuid():N}.wav");
-            string filter = string.Format(
-                CultureInfo.InvariantCulture,
-                "loudnorm=I={0:0.##}:TP={1:0.##}:LRA=11" +
-                ":measured_I={2:0.##}:measured_TP={3:0.##}" +
-                ":measured_LRA={4:0.##}:measured_thresh={5:0.##}" +
-                ":offset={6:0.##}:linear=true:print_format=summary",
-                targetLufs, targetTruePeak,
-                stats.InputI, stats.InputTp, stats.InputLra, stats.InputThresh, stats.TargetOffset
-            );
+            // We deliberately do NOT apply the loudnorm filter in pass 2. Even
+            // with linear=true, loudnorm runs an internal true-peak limiter
+            // with a release time; on dynamic songs the limiter ducks loud
+            // sections and you can hear the gain ramp back up over a few
+            // seconds — described by users as "sudden quiet patches that
+            // gradually return to normal volume."
+            //
+            // Instead, compute a single dB gain from the measurement and apply
+            // it with ffmpeg's flat `volume` filter. The headroom clamp below
+            // caps the gain so the output's true peak never exceeds
+            // targetTruePeak, which keeps the result clip-free without the
+            // limiter artifact. Songs whose natural peaks are very loud get
+            // less LUFS gain (i.e. they end up slightly quieter than target)
+            // but the playback stays consistent with itself throughout.
+            double gainForLufs = targetLufs - stats.InputI;
+            double maxHeadroom = targetTruePeak - stats.InputTp;
+            double gainDb      = Math.Min(gainForLufs, maxHeadroom);
 
-            string args = $"-hide_banner -y -i \"{inputFileName}\" -af \"{filter}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{output}\"";
+            string output = Path.Combine(Path.GetTempPath(), $"vc_loudnorm_{Guid.NewGuid():N}.wav");
+            string volumeFilter = string.Format(
+                CultureInfo.InvariantCulture,
+                "volume={0:0.##}dB", gainDb
+            );
+            string args = $"-hide_banner -y -i \"{inputFileName}\" -af \"{volumeFilter}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{output}\"";
             Run(args);
 
             // Apply KSH music offset to the audio, not to the chart. This keeps
