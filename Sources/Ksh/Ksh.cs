@@ -28,6 +28,11 @@ namespace VoxCharger
         public int PreviewOffset     { get; set; }
         public float BpmMin          { get; set; }
         public float BpmMax          { get; set; }
+        // First single-value t= the parser sees in the header. Used to convert
+        // the KSH 'o=' music-offset (milliseconds) into VOX ticks when we
+        // realign positions — the conversion depends on BPM, and the chart's
+        // initial BPM is the right reference for a fixed intro offset.
+        public float InitialBpm      { get; private set; }
         public string Background     { get; set; }
         public int MeasureCount      { get; private set; }
         public List<string> FxLog    { get; set; }
@@ -206,8 +211,20 @@ namespace VoxCharger
                      */
 
                     float position = (measure * 192f) + ((offset / (float)noteCount) * 192f);
-                    if (opt.RealignOffset)
-                        position -= MusicOffset; // Attempt to align
+                    // Apply KSH 'o=' music offset. It's in milliseconds; convert
+                    // to VOX ticks using the chart's initial BPM so every event
+                    // gets shifted by the same constant. Positive o= means the
+                    // audio starts later than chart tick 0 in KSM — in VOX
+                    // (where chart and audio share tick 0) that translates to
+                    // the chart events being placed EARLIER. The old code
+                    // subtracted raw milliseconds from ticks, which is a unit
+                    // mismatch; it was also gated behind RealignOffset which
+                    // defaulted to false, so in practice no offset was applied
+                    // at all — charts like 'Roar of Chronos' (o=1400 @ 175 BPM
+                    // -> 196 ticks, one whole note) ended up offset by a
+                    // whole musical note from where they should be.
+                    if (MusicOffset != 0 && InitialBpm > 0)
+                        position -= MusicOffset * InitialBpm * 48f / 60000f;
 
                     // Magic happens here!
                     time = Time.FromOffset(position, signature);
@@ -288,6 +305,11 @@ namespace VoxCharger
                                 {
                                     var bpm = new Event.Bpm(new Time(time.Measure, time.Beat, 0), t); // beat still acceptable
                                     Events.Add(bpm);
+
+                                    // Capture the first explicit single-value BPM as the initial BPM
+                                    // for offset-to-ticks conversion.
+                                    if (InitialBpm == 0f)
+                                        InitialBpm = t;
                                 }
                             }
 
@@ -586,8 +608,8 @@ namespace VoxCharger
                         rangeRight = 1;
 
                     float position = measure * 192f;
-                    if (measure > 1 && opt.RealignOffset)
-                        position -= MusicOffset;
+                    if (measure > 1 && MusicOffset != 0 && InitialBpm > 0)
+                        position -= MusicOffset * InitialBpm * 48f / 60000f;
 
                     time = Time.FromOffset(position, signature);
                     for (int j = i + 1; j < lines.Length; j++)
