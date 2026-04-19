@@ -346,7 +346,24 @@ namespace VoxCharger
                             }
 
                             Event.Bpm end = null;
-                            var target    = Time.FromOffset((int)duration, signature);
+                            // Stop-end target is `duration` ticks after `time` (one tick =
+                            // 1/192 whole note = 1/48 quarter note). The old code used
+                            // Time.FromOffset(duration, signature), which treats its arg as
+                            // an *absolute* position from chart start — so every stop-end
+                            // landed near measure 0 and the halt never released until the
+                            // next unrelated non-stop BPM change. Time.Add is also not
+                            // suitable here: it internally assumes "192 ticks per measure"
+                            // which only holds for 4/4; on 50/4 measures like the ones in
+                            // 'And Revive The Melody' MXM it produces 6+ beats of offset
+                            // for a 24-tick stop. Compute the offset directly from raw
+                            // tick math so it's time-signature-agnostic.
+                            int   stopDurTicks = (int)duration;
+                            int   endOffsetAbs = time.Offset + stopDurTicks;
+                            int   endBeat     = time.Beat   + endOffsetAbs / 48;
+                            int   endOffset   = endOffsetAbs % 48;
+                            int   endMeasure  = time.Measure + (endBeat - 1) / signature.Beat;
+                            endBeat = ((endBeat - 1) % signature.Beat) + 1;
+                            var target = new Time(endMeasure, endBeat, endOffset);
                             foreach (var ev in Events[target])
                             {
                                 if (ev is Event.Bpm x)
