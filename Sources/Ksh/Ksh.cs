@@ -224,7 +224,7 @@ namespace VoxCharger
                     // -> 196 ticks, one whole note) ended up offset by a
                     // whole musical note from where they should be.
                     if (MusicOffset != 0 && InitialBpm > 0)
-                        position -= MusicOffset * InitialBpm * 48f / 60000f;
+                        position += MusicOffset * InitialBpm * 48f / 60000f;
 
                     // Magic happens here!
                     time = Time.FromOffset(position, signature);
