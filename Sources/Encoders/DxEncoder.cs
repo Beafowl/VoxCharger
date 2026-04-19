@@ -88,6 +88,34 @@ namespace VoxCharger
             // The `WaveFormatConversionStream` will likely to fail if we convert our source straight to MS-ADPCM
             // Also, NAudio doesn't support writing samples smaller than 16bit (our MS-ADPCM use 4 bit), so we had to put our preview effects while in 16bit format
 
+            // If loudness normalization is requested, run the full source through
+            // two-pass EBU R128 loudnorm first and point the rest of the pipeline
+            // at the resulting temp WAV. Preview trim/fade then operates on the
+            // already-equalized audio.
+            string working  = fileName;
+            string tempNorm = null;
+            try
+            {
+                if (opt.NormalizeLoudness)
+                {
+                    tempNorm = LoudnessNormalizer.Normalize(fileName, opt.TargetLufs, opt.TargetTruePeak, opt.MusicOffsetMs);
+                    working  = tempNorm;
+                }
+
+                return ConvertWavCore(working, opt);
+            }
+            finally
+            {
+                if (tempNorm != null && File.Exists(tempNorm))
+                {
+                    try { File.Delete(tempNorm); }
+                    catch { /* best-effort cleanup */ }
+                }
+            }
+        }
+
+        private static MemoryStream ConvertWavCore(string fileName, AudioImportOptions opt)
+        {
             // Zero, define our target format and preview flag
             var format = new DxAdpcmWaveFormat(44100, 2); // it's 4 bits per sample
             bool preview = opt.IsPreview;

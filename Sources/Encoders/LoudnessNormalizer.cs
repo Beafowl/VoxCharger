@@ -57,7 +57,7 @@ namespace VoxCharger
             return name;
         }
 
-        public static string Normalize(string inputFileName, double targetLufs = -14.0, double targetTruePeak = -1.5)
+        public static string Normalize(string inputFileName, double targetLufs = -14.0, double targetTruePeak = -1.5, int musicOffsetMs = 0)
         {
             if (!File.Exists(FfmpegFileName))
                 throw new FileNotFoundException($"{FfmpegFileName} not found — install ffmpeg and place it next to VoxCharger.exe or add its folder to PATH", FfmpegFileName);
@@ -79,6 +79,39 @@ namespace VoxCharger
 
             string args = $"-hide_banner -y -i \"{inputFileName}\" -af \"{filter}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{output}\"";
             Run(args);
+
+            // Apply KSH music offset to the audio, not to the chart. This keeps
+            // every chart event exactly on its KSH tick position — notes land
+            // cleanly on the beat grid in-game instead of being shifted off by
+            // the ms->ticks remainder (1400 ms @ 175 BPM = 196 ticks = 4 beats
+            // + 4 ticks leftover).
+            if (musicOffsetMs != 0)
+            {
+                string shifted = Path.Combine(Path.GetTempPath(), $"vc_offset_{Guid.NewGuid():N}.wav");
+                string shiftArgs;
+                if (musicOffsetMs > 0)
+                {
+                    // Positive offset: pad front with silence. adelay takes ms
+                    // per channel — two values for stereo.
+                    shiftArgs = $"-hide_banner -y -i \"{output}\" -af \"adelay={musicOffsetMs}|{musicOffsetMs}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{shifted}\"";
+                }
+                else
+                {
+                    // Negative offset: seek-trim from the start. -ss before -i
+                    // uses fast keyframe seek on decoded audio (accurate in WAV
+                    // since every sample is a "keyframe"), expressed in seconds.
+                    double trimSec = Math.Abs(musicOffsetMs) / 1000.0;
+                    shiftArgs = string.Format(
+                        CultureInfo.InvariantCulture,
+                        "-hide_banner -y -ss {0:0.####} -i \"{1}\" -ar 44100 -ac 2 -c:a pcm_s16le \"{2}\"",
+                        trimSec, output, shifted
+                    );
+                }
+                Run(shiftArgs);
+                try { File.Delete(output); } catch { }
+                output = shifted;
+            }
+
             return output;
         }
 

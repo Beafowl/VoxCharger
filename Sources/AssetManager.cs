@@ -35,6 +35,15 @@ namespace VoxCharger
         public double TargetTruePeak  { get; set; } = -1.5;
         public short TargetVolume     { get; set; } = 91;
 
+        // KSH 'o=' music-offset in milliseconds, applied to the audio file
+        // rather than to chart tick positions. Positive = pad audio front
+        // with silence (music starts later relative to chart tick 0).
+        // Negative = trim audio front (music already N ms in at chart start).
+        // Applying it to audio keeps every chart event aligned exactly on
+        // its KSH tick position — which means notes stay on the beat grid
+        // visually instead of being shifted off by the ms->ticks remainder.
+        public int MusicOffsetMs      { get; set; } = 0;
+
         public static AudioImportOptions WithFormat(AudioFormat format)
         {
             return new AudioImportOptions
@@ -56,6 +65,8 @@ namespace VoxCharger
                 TargetLufs        = TargetLufs,
                 TargetTruePeak    = TargetTruePeak,
                 TargetVolume      = TargetVolume,
+                // Music offset is only meaningful for the main audio, not
+                // the short preview clip, so don't propagate it.
             };
         }
     }

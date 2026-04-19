@@ -223,8 +223,11 @@ namespace VoxCharger
                     // at all — charts like 'Roar of Chronos' (o=1400 @ 175 BPM
                     // -> 196 ticks, one whole note) ended up offset by a
                     // whole musical note from where they should be.
-                    if (MusicOffset != 0 && InitialBpm > 0)
-                        position += MusicOffset * InitialBpm * 48f / 60000f;
+                    // NOTE: MusicOffset is applied to the *audio* during encode
+                    // (see LoudnessNormalizer.Normalize / AudioImportOptions.
+                    // MusicOffsetMs), not to chart positions here. That keeps
+                    // every event exactly on the KSH tick grid; the audio is
+                    // padded or trimmed to absorb the ms offset.
 
                     // Magic happens here!
                     time = Time.FromOffset(position, signature);

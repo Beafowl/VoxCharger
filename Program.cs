@@ -202,6 +202,7 @@ namespace VoxCharger
                 var exporter = new Ksh.Exporter(mainKsh);
                 var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
                 audioOptions.NormalizeLoudness = true;
+                audioOptions.MusicOffsetMs     = mainKsh.MusicOffset;
                 header.Volume = audioOptions.TargetVolume;
                 exporter.Export(header, charts, null, audioOptions);
 
@@ -362,6 +363,7 @@ namespace VoxCharger
                         var exporter = new Ksh.Exporter(song.mainKsh);
                         var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
                         audioOptions.NormalizeLoudness = true;
+                        audioOptions.MusicOffsetMs     = song.mainKsh.MusicOffset;
                         header.Volume = audioOptions.TargetVolume;
                         exporter.Export(header, song.charts, null, audioOptions);
 
@@ -525,6 +527,7 @@ namespace VoxCharger
                             var exporter = new Ksh.Exporter(song.mainKsh);
                             var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
                             audioOptions.NormalizeLoudness = true;
+                            audioOptions.MusicOffsetMs     = song.mainKsh.MusicOffset;
                             header.Volume = audioOptions.TargetVolume;
                             exporter.Export(header, song.charts, null, audioOptions);
 
