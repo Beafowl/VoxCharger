@@ -57,7 +57,14 @@ namespace VoxCharger
             return name;
         }
 
-        public static string Normalize(string inputFileName, double targetLufs = -14.0, double targetTruePeak = -1.5, int musicOffsetMs = 0)
+        public static string Normalize(
+            string inputFileName,
+            double targetLufs = -14.0,
+            double targetTruePeak = -1.5,
+            int musicOffsetMs = 0,
+            int leadInPadMs = 0,
+            int truncateAtMs = 0,
+            int tailFadeOutMs = 0)
         {
             if (!File.Exists(FfmpegFileName))
                 throw new FileNotFoundException($"{FfmpegFileName} not found — install ffmpeg and place it next to VoxCharger.exe or add its folder to PATH", FfmpegFileName);
@@ -127,6 +134,47 @@ namespace VoxCharger
                 Run(shiftArgs);
                 try { File.Delete(output); } catch { }
                 output = shifted;
+            }
+
+            // Optional second-stage pass: prepend a fixed lead-in of silence
+            // and/or fade out + truncate the tail. Independent of the KSH
+            // `o=` offset above — that adjusts where the music aligns with
+            // chart tick 0; this gives breathing room before the first note
+            // and stops the audio drifting past the chart's last note.
+            //
+            // Filter chain (only filters with non-zero values are emitted):
+            //   adelay=L|L                — lead-in pad
+            //   afade=t=out:st=S:d=D     — linear fade-out ending at the cut
+            //
+            // Truncate is applied via `-t` so audio that's already shorter
+            // than TruncateAtMs is left untouched.
+            bool hasLeadIn   = leadInPadMs > 0;
+            bool hasFade     = truncateAtMs > 0 && tailFadeOutMs > 0;
+            bool hasTruncate = truncateAtMs > 0;
+            if (hasLeadIn || hasFade || hasTruncate)
+            {
+                string finalOut = Path.Combine(Path.GetTempPath(), $"vc_tail_{Guid.NewGuid():N}.wav");
+                var filters = new System.Collections.Generic.List<string>();
+                if (hasLeadIn)
+                    filters.Add(string.Format(CultureInfo.InvariantCulture, "adelay={0}|{0}", leadInPadMs));
+                if (hasFade)
+                {
+                    int fadeStartMs = Math.Max(0, truncateAtMs - tailFadeOutMs);
+                    double fadeStartSec = fadeStartMs / 1000.0;
+                    double fadeDurSec   = tailFadeOutMs / 1000.0;
+                    filters.Add(string.Format(CultureInfo.InvariantCulture, "afade=t=out:st={0:0.####}:d={1:0.####}", fadeStartSec, fadeDurSec));
+                }
+                string filterArg = filters.Count > 0
+                    ? $" -af \"{string.Join(",", filters)}\""
+                    : "";
+                string truncateArg = hasTruncate
+                    ? string.Format(CultureInfo.InvariantCulture, " -t {0:0.####}", truncateAtMs / 1000.0)
+                    : "";
+
+                string finalArgs = $"-hide_banner -y -i \"{output}\"{filterArg} -ar 44100 -ac 2 -c:a pcm_s16le{truncateArg} \"{finalOut}\"";
+                Run(finalArgs);
+                try { File.Delete(output); } catch { }
+                output = finalOut;
             }
 
             return output;

@@ -24,7 +24,14 @@ namespace VoxCharger
                 if (opt.NormalizeLoudness)
                 {
                     LoudnessNormalizer.FfmpegFileName = ConverterFileName;
-                    tempNorm = LoudnessNormalizer.Normalize(inputFileName, opt.TargetLufs, opt.TargetTruePeak, opt.MusicOffsetMs);
+                    tempNorm = LoudnessNormalizer.Normalize(
+                        inputFileName,
+                        opt.TargetLufs,
+                        opt.TargetTruePeak,
+                        opt.MusicOffsetMs,
+                        opt.LeadInPadMs,
+                        opt.TruncateAtMs,
+                        opt.TailFadeOutMs);
                     source   = tempNorm;
                 }
 

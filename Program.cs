@@ -198,13 +198,22 @@ namespace VoxCharger
                 foreach (var entry in charts)
                     Console.WriteLine($"  {entry.Key}: Level {entry.Value.Header.Level}");
 
-                // Run the full export pipeline
-                var exporter = new Ksh.Exporter(mainKsh);
+                // Auto-add lead-in / tail padding so charts whose first
+                // note sits at chart tick 0 don't drop the player straight
+                // into a note on the judgement line, and so audio that runs
+                // long past the last note fades out cleanly. See
+                // ApplyLeadInAndTail for the policy.
                 var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
                 audioOptions.NormalizeLoudness = true;
                 audioOptions.MusicOffsetMs     = mainKsh.MusicOffset;
+                var parseOpt = ApplyLeadInAndTail(mainKsh, audioOptions);
+
+                // Run the full export pipeline. parseOpt carries the
+                // LeadInMeasures shift, so the per-difficulty parses inside
+                // Exporter pick up the same shift automatically.
+                var exporter = new Ksh.Exporter(mainKsh);
                 header.Volume = audioOptions.TargetVolume;
-                exporter.Export(header, charts, null, audioOptions);
+                exporter.Export(header, charts, parseOpt, audioOptions);
 
                 // Execute the deferred import action
                 if (exporter.Action != null)
@@ -528,8 +537,9 @@ namespace VoxCharger
                             var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
                             audioOptions.NormalizeLoudness = true;
                             audioOptions.MusicOffsetMs     = song.mainKsh.MusicOffset;
+                            var parseOpt = ApplyLeadInAndTail(song.mainKsh, audioOptions);
                             header.Volume = audioOptions.TargetVolume;
-                            exporter.Export(header, song.charts, null, audioOptions);
+                            exporter.Export(header, song.charts, parseOpt, audioOptions);
 
                             if (exporter.Action != null)
                                 exporter.Action.Invoke();
@@ -689,6 +699,25 @@ namespace VoxCharger
         // exception caught by the surrounding try/catch leaves VoxCharger
         // exiting 0 with no song folder written, which the asphyxia caller
         // misreads as success.
+        // Thin wrapper around Ksh.ApplyAutoLeadInTo for the CLI: in addition
+        // to the shift the GUI does, log a one-liner so users running the
+        // bulk reconvert can see which charts got padded. Returns a
+        // ParseOption with LeadInMeasures set so each per-difficulty re-parse
+        // inside Ksh.Exporter mirrors the main shift.
+        private static Ksh.ParseOption ApplyLeadInAndTail(Ksh ksh, AudioImportOptions audioOptions)
+        {
+            double firstEventMs = ksh.GetFirstGameplayEventMs();
+            int measures = Ksh.ApplyAutoLeadInTo(ksh, audioOptions);
+            if (measures > 0)
+            {
+                Console.WriteLine(
+                    $"  lead-in: first note was at {firstEventMs:F0} ms; " +
+                    $"prepended {measures} measure(s) ({audioOptions.LeadInPadMs} ms)"
+                );
+            }
+            return new Ksh.ParseOption { LeadInMeasures = measures };
+        }
+
         private static void LoadOrRepairMix(string gamePath, string mixName)
         {
             string mixPath = Path.Combine(gamePath, "data_mods", mixName);

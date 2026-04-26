@@ -44,6 +44,24 @@ namespace VoxCharger
         // visually instead of being shifted off by the ms->ticks remainder.
         public int MusicOffsetMs      { get; set; } = 0;
 
+        // Extra silence prepended to the audio after MusicOffset processing,
+        // independent of `o=`. Use together with Ksh.PrependLeadInMeasures so
+        // both audio and chart get the same shift — gives players a moment
+        // before the first note instead of dropping them straight into the
+        // judgement line on charts whose first event sits at tick 0.
+        public int LeadInPadMs        { get; set; } = 0;
+
+        // Hard cut audio at this absolute timestamp (ms in the FINAL audio,
+        // i.e. after MusicOffset trimming and LeadInPad). 0 = no truncate.
+        // Used to stop the music from continuing after the chart finishes
+        // when the source KSM clip is longer than the gameplay segment.
+        public int TruncateAtMs       { get; set; } = 0;
+
+        // Linear fade-out duration ending at TruncateAtMs (ms). 0 = no fade.
+        // The fade starts at (TruncateAtMs - TailFadeOutMs) so the audio is
+        // already silent by the cut point.
+        public int TailFadeOutMs      { get; set; } = 0;
+
         public static AudioImportOptions WithFormat(AudioFormat format)
         {
             return new AudioImportOptions

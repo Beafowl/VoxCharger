@@ -94,6 +94,15 @@ namespace VoxCharger
             }
 
             public bool RealignOffset     { get; set; } = false;
+
+            // After parsing finishes, shift every event forward by this many
+            // whole measures and re-establish the initial BPM / signature at
+            // (1,1,0). 0 = no shift. Used by Program.ApplyLeadInAndTail to
+            // give players a moment of silence before the first note on
+            // charts whose KSH places gameplay events at chart tick 0. Whole-
+            // measure shifts keep all notes on their original beat grid.
+            public int LeadInMeasures     { get; set; } = 0;
+
             public SoundFxOptions SoundFx { get; set; } = new SoundFxOptions();
             public CameraOptions  Camera  { get; set; } = new CameraOptions();
             public TrackOptions Track     { get; set; } = new TrackOptions();
@@ -935,6 +944,15 @@ namespace VoxCharger
 
             if (opt.SanitizeLasers)
                 SanitizeLasers(opt.MaxLaserEventsPerMeasure, opt.MaxLaserSlamsPerBeat);
+
+            // Auto-applied lead-in: gives players a moment of silence before
+            // the first note on charts whose first event sits at tick 0.
+            // Caller (Program.ApplyLeadInAndTail) sets the measure count;
+            // we apply it here so every chart that goes through Parse —
+            // including the per-difficulty re-parses inside Ksh.Exporter —
+            // gets the same shift, keeping all difficulties in sync.
+            if (opt.LeadInMeasures > 0)
+                PrependLeadInMeasures(opt.LeadInMeasures);
         }
 
         // Thin excessive laser density in-place on the parsed event list. Two

@@ -98,7 +98,14 @@ namespace VoxCharger
             {
                 if (opt.NormalizeLoudness)
                 {
-                    tempNorm = LoudnessNormalizer.Normalize(fileName, opt.TargetLufs, opt.TargetTruePeak, opt.MusicOffsetMs);
+                    tempNorm = LoudnessNormalizer.Normalize(
+                        fileName,
+                        opt.TargetLufs,
+                        opt.TargetTruePeak,
+                        opt.MusicOffsetMs,
+                        opt.LeadInPadMs,
+                        opt.TruncateAtMs,
+                        opt.TailFadeOutMs);
                     working  = tempNorm;
                 }
 
