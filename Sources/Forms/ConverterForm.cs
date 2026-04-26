@@ -571,13 +571,45 @@ namespace VoxCharger
                     return;
                 }
 
+                // .2dx (Iidx) matches what BulkImport, the CLI --full-import,
+                // and asphyxia's reconvert path all produce — and what the
+                // KFC game build actually loads. Choosing .s3v here used to
+                // silently break GUI-imported charts on installs that don't
+                // load the WMA-based .s3v variant (the audio file was created
+                // but the game never picked it up, so playback was silent).
                 var importOptions = new AudioImportOptions
                 {
-                    Format        = AudioFormat.S3V,
-                    PreviewOffset = PreviewTimePicker.Value.Minute * 60 + PreviewTimePicker.Value.Second
+                    Format            = AudioFormat.Iidx,
+                    PreviewOffset     = PreviewTimePicker.Value.Minute * 60 + PreviewTimePicker.Value.Second,
+                    NormalizeLoudness = true,
                 };
 
-                _exporter.Export(Result, _charts, Options, importOptions);
+                // Audio is equalized to TargetLufs; pin VoxHeader.Volume to the
+                // matching target so in-game playback is consistent across charts.
+                Result.Volume = importOptions.TargetVolume;
+
+                // Auto-apply the lead-in / tail-fade policy. Mutates the
+                // exporter's source Ksh (shifts events forward when the first
+                // note is too close to tick 0) and sets LeadInPadMs /
+                // TruncateAtMs / TailFadeOutMs on importOptions so the audio
+                // pipeline pads + cuts the audio to match. Surfacing the
+                // measure count via Options.LeadInMeasures is required so the
+                // per-difficulty re-parses inside the exporter pick up the
+                // same shift — without it the chart-side and audio-side
+                // shifts drift apart and notes appear before the music.
+                int leadInMeasures = Ksh.ApplyAutoLeadInTo(_exporter.Source, importOptions);
+                int prevLeadIn     = Options.LeadInMeasures;
+                Options.LeadInMeasures = leadInMeasures;
+                try
+                {
+                    _exporter.Export(Result, _charts, Options, importOptions);
+                }
+                finally
+                {
+                    // Reset the shared ParseOption so a subsequent import in
+                    // the same form session doesn't compound the shift.
+                    Options.LeadInMeasures = prevLeadIn;
+                }
                 Action = _exporter.Action;
 
                 DialogResult = DialogResult.OK;
@@ -651,7 +683,29 @@ namespace VoxCharger
                             var exporter = new Ksh.Exporter(ksh);
 
                             header.Ascii = ascii;
-                            exporter.Export(header, charts, Options);
+
+                            var importOptions = new AudioImportOptions
+                            {
+                                NormalizeLoudness = true,
+                            };
+                            header.Volume = importOptions.TargetVolume;
+
+                            // Same auto lead-in / tail-fade policy as
+                            // single-import. Each chart in the bulk run
+                            // gets its own shift sized from its own first/
+                            // last event, so we toggle Options.LeadInMeasures
+                            // per-iteration and reset after Export.
+                            int leadInMeasures = Ksh.ApplyAutoLeadInTo(ksh, importOptions);
+                            int prevLeadIn     = Options.LeadInMeasures;
+                            Options.LeadInMeasures = leadInMeasures;
+                            try
+                            {
+                                exporter.Export(header, charts, Options, importOptions);
+                            }
+                            finally
+                            {
+                                Options.LeadInMeasures = prevLeadIn;
+                            }
 
                             output.Add(header);
                             actions.Add(ascii, exporter.Action);

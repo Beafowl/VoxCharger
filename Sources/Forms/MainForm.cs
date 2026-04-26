@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.WindowsAPICodePack.Dialogs;
@@ -18,16 +20,46 @@ namespace VoxCharger
 
         private bool _pristine = true;
         private bool _autosave = true;
+
+        // Music list sort state. The ListBox itself has Sorted=false now so
+        // we control ordering manually — the alphabetical default is
+        // preserved by initialising _sortMode to TitleAsc.
+        private enum SortMode { TitleAsc, TitleDesc, IdAsc, IdDesc }
+        private SortMode _sortMode = SortMode.TitleAsc;
+
+        // Live search filter applied to the music list. Empty string matches
+        // every chart. Hits title, artist, ASCII code, and music id (substring,
+        // case-insensitive) so a user can find a song by any of those fields.
+        private string _searchText = string.Empty;
         #endregion
+
+        // EM_SETCUEBANNER lets us put greyed-out placeholder text in the
+        // search box without subclassing or hand-rolling a paint override.
+        // .NET Framework 4.7.2 doesn't expose TextBox.PlaceholderText.
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, string lParam);
+        private const int EM_SETCUEBANNER = 0x1501;
 
         #region --- Form ---
         public MainForm()
         {
             InitializeComponent();
+            // Pick a titlebar/taskbar icon that reads against the current
+            // Windows app theme: dark icon on light theme, white icon on
+            // dark theme. The Win32 ApplicationIcon embedded in the .exe
+            // (used by Explorer when the app isn't running) stays the
+            // single dark variant — there's no theme-aware static icon.
+            var icon = IconLoader.ForCurrentTheme();
+            if (icon != null) Icon = icon;
         }
 
         private void OnMainFormLoad(object sender, EventArgs e)
         {
+            // Greyed-out placeholder text in the search box; clears on focus,
+            // reappears when empty. EM_SETCUEBANNER is the native way to do
+            // this on .NET Framework, no custom paint code needed.
+            SendMessage(SearchTextBox.Handle, EM_SETCUEBANNER, 1, "Search by title, artist, code, or id…");
+
             try
             {
                 string currentDir = Application.StartupPath;
@@ -245,6 +277,438 @@ namespace VoxCharger
                     FileMenu.Enabled = OpenButton.Enabled = true;
                 }
             }
+        }
+
+        // Export the current mix as a portable JSON manifest of ksm.dev URLs.
+        // Charts that were imported from non-ksm.dev sources (manual KSH file
+        // / new-from-blank / vox-only) won't be in the URL store and so are
+        // skipped — there's nothing the importer could do with them.
+        private void OnExportMixFileMenuClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(AssetManager.MixPath))
+                return;
+
+            var urlMap = MixUrlStore.Load(AssetManager.MixPath);
+            if (urlMap.Count == 0)
+            {
+                MessageBox.Show(
+                    "No ksm.dev URLs are recorded for this mix.\n\n" +
+                    "Export only includes charts that were imported via " +
+                    "\"Import from ksm.dev URL..\" — manually-imported KSH " +
+                    "files have no URL to export.",
+                    "Export Mix",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+
+            using (var browser = new SaveFileDialog())
+            {
+                browser.Filter   = "Mix manifest (*.json)|*.json|All Files|*.*";
+                browser.FileName = (AssetManager.MixName ?? "mix") + "_manifest.json";
+                browser.Title    = "Export Mix as ksm.dev URL list";
+                if (browser.ShowDialog() != DialogResult.OK)
+                    return;
+
+                try
+                {
+                    var manifest = MixManifest.Build(AssetManager.MixName, AssetManager.Headers, urlMap);
+                    MixManifest.Save(browser.FileName, manifest);
+                    MessageBox.Show(
+                        $"Exported {manifest.charts.Count} chart(s) to:\n{browser.FileName}",
+                        "Export Mix",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        "Export failed:\n" + ex.Message,
+                        "Export Mix",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error
+                    );
+                }
+            }
+        }
+
+        // Read a manifest JSON, download every URL into the system temp dir,
+        // and run the existing BulkImporter flow on the resulting folder
+        // structure. The user gets ONE confirmation form (BulkImporter mode)
+        // rather than one per chart, and IDs are auto-assigned starting from
+        // whatever the user picks in the form.
+        //
+        // After the bulk import finishes, we walk the imported headers and
+        // record their URLs against the new music ids in the sidecar so
+        // reconvert-from-URL still works on the freshly-imported mix.
+        private void OnImportMixFileMenuClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(AssetManager.MixPath))
+                return;
+
+            string manifestPath;
+            using (var browser = new OpenFileDialog())
+            {
+                browser.Filter = "Mix manifest (*.json)|*.json|All Files|*.*";
+                browser.Title  = "Import Mix from manifest";
+                if (browser.ShowDialog() != DialogResult.OK)
+                    return;
+                manifestPath = browser.FileName;
+            }
+
+            MixManifest.Manifest manifest;
+            try
+            {
+                manifest = MixManifest.Load(manifestPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "Failed to read manifest:\n" + ex.Message,
+                    "Import Mix",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+                return;
+            }
+
+            if (manifest == null || manifest.charts == null || manifest.charts.Count == 0)
+            {
+                MessageBox.Show(
+                    "Manifest contains no charts.",
+                    "Import Mix",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+            if (manifest.format != null && manifest.format != MixManifest.FormatTag)
+            {
+                MessageBox.Show(
+                    $"Unrecognized manifest format: {manifest.format}",
+                    "Import Mix",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            string parentDir = Path.Combine(Path.GetTempPath(), "VoxCharger_MixImport_" + Path.GetRandomFileName());
+            Directory.CreateDirectory(parentDir);
+
+            // entryAscii (folder name) -> URL, so we can re-key the URL store
+            // by the music id BulkImporter assigns post-import.
+            var asciiToUrl = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var errors    = new List<string>();
+
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog =>
+                {
+                    int total = manifest.charts.Count;
+                    for (int i = 0; i < total; i++)
+                    {
+                        var entry = manifest.charts[i];
+                        dialog.SetStatus($"Downloading {i + 1}/{total}: {entry.title ?? entry.url}");
+                        dialog.SetProgress((i / (float)total) * 100f);
+
+                        if (string.IsNullOrWhiteSpace(entry.url))
+                        {
+                            errors.Add($"#{entry.id}: missing URL");
+                            continue;
+                        }
+                        // BulkImporter uses the folder name as the chart's
+                        // ASCII code, so name each subfolder after the entry
+                        // ascii (or fall back to a unique sequence). Make the
+                        // name filesystem-safe.
+                        string ascii = entry.ascii ?? ("chart_" + entry.id);
+                        string safe  = MakeSafeFolderName(ascii);
+                        string dest  = Path.Combine(parentDir, safe);
+                        // Avoid collisions on duplicate ASCII codes.
+                        int attempt = 1;
+                        while (Directory.Exists(dest))
+                            dest = Path.Combine(parentDir, safe + "_" + (++attempt));
+
+                        try
+                        {
+                            using (var dl = new KsmDownloader())
+                            {
+                                string extracted = dl.DownloadAndExtract(entry.url);
+                                // Move the extracted ksh + assets into the
+                                // dest folder under our parent. The
+                                // BulkImporter expects to see the ksh files
+                                // directly under <parent>/<song>/.
+                                string kshDir = KsmDownloader.FindKshDirectory(extracted);
+                                if (kshDir == null)
+                                {
+                                    errors.Add($"#{entry.id} ({entry.title}): no .ksh in archive");
+                                    KsmDownloader.Cleanup(extracted);
+                                    continue;
+                                }
+                                Directory.Move(kshDir, dest);
+                                // Try to clean up the now-mostly-empty
+                                // extraction temp dir; ignore if it still
+                                // has unrelated files.
+                                try { KsmDownloader.Cleanup(extracted); } catch { }
+                            }
+                            asciiToUrl[Path.GetFileName(dest)] = entry.url;
+                        }
+                        catch (Exception ex)
+                        {
+                            errors.Add($"#{entry.id} ({entry.title}): {ex.Message}");
+                        }
+                    }
+                    dialog.Complete();
+                });
+                loader.ShowDialog();
+            }
+
+            if (asciiToUrl.Count == 0)
+            {
+                try { Directory.Delete(parentDir, true); } catch { }
+                ShowImportSummary("Import Mix", 0, errors);
+                return;
+            }
+
+            int imported = 0;
+            try
+            {
+                using (var converter = new ConverterForm(parentDir, ConvertMode.BulkImporter))
+                {
+                    if (converter.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    foreach (var header in converter.ResultSet)
+                    {
+                        if (!_actions.ContainsKey(header.Ascii))
+                            _actions[header.Ascii] = new Queue<Action>();
+                        AssetManager.Headers.Add(header);
+                        MusicListBox.Items.Add(header);
+                        _actions[header.Ascii].Enqueue(converter.ActionSet[header.Ascii]);
+
+                        // Re-key the URL by the music id BulkImporter chose.
+                        if (asciiToUrl.TryGetValue(header.Ascii, out string url))
+                            MixUrlStore.SetUrl(AssetManager.MixPath, header.Id, url);
+                        imported++;
+                    }
+                    ApplyCurrentSort();
+                    _pristine = false;
+                    if (_autosave)
+                        Save(AssetManager.MdbFilename);
+                }
+
+                ShowImportSummary("Import Mix", imported, errors);
+            }
+            finally
+            {
+                try { Directory.Delete(parentDir, true); } catch { }
+            }
+        }
+
+        // True when the currently-selected chart has a ksm.dev URL recorded
+        // in the mix's sidecar — i.e. when "Reconvert from URL" can do
+        // anything useful.
+        private bool SelectedSongHasReconvertUrl()
+        {
+            var header = MusicListBox.SelectedItem as VoxHeader;
+            if (header == null || string.IsNullOrEmpty(AssetManager.MixPath))
+                return false;
+            string url = MixUrlStore.GetUrl(AssetManager.MixPath, header.Id);
+            return !string.IsNullOrEmpty(url);
+        }
+
+        // Keep both reconvert affordances (the visible button next to the
+        // music id and the right-click context menu item) in sync with the
+        // current selection's URL status. Called from selection change,
+        // context menu popup, and after import / remove paths that change
+        // which URLs are recorded.
+        private void RefreshReconvertControls()
+        {
+            bool hasUrl = SelectedSongHasReconvertUrl();
+            if (ReconvertButton != null)
+                ReconvertButton.Enabled = hasUrl;
+            if (ReconvertFromUrlMenu != null)
+            {
+                ReconvertFromUrlMenu.Enabled = hasUrl;
+                ReconvertFromUrlMenu.Text = hasUrl
+                    ? "Reconvert from ksm.dev URL"
+                    : "Reconvert from ksm.dev URL (no URL stored)";
+            }
+        }
+
+        private void OnMusicListContextMenuPopup(object sender, EventArgs e)
+        {
+            RefreshReconvertControls();
+        }
+
+        // Pull the latest version of the selected chart from its stored
+        // ksm.dev URL and re-import. The existing entry's assets are deleted
+        // first so re-import doesn't trip the "music code already taken"
+        // check; the user re-confirms metadata in ConverterForm and the new
+        // URL is recorded against whatever id ConverterForm assigns
+        // (typically the same one the chart had).
+        private void OnReconvertFromUrlClick(object sender, EventArgs e)
+        {
+            var header = MusicListBox.SelectedItem as VoxHeader;
+            if (header == null) return;
+            if (string.IsNullOrEmpty(AssetManager.MixPath)) return;
+
+            string url = MixUrlStore.GetUrl(AssetManager.MixPath, header.Id);
+            if (string.IsNullOrEmpty(url))
+            {
+                MessageBox.Show(
+                    "No ksm.dev URL is recorded for this chart.",
+                    "Reconvert",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+
+            var resp = MessageBox.Show(
+                $"Reconvert \"{header.Title}\" from:\n{url}\n\n" +
+                "This will delete the chart's existing assets and re-import " +
+                "the latest version from ksm.dev.\n\nContinue?",
+                "Reconvert",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question
+            );
+            if (resp != DialogResult.Yes) return;
+
+            string oldAscii = header.Ascii;
+            int    oldId    = header.Id;
+
+            // Drop the existing entry from the in-memory list + DB. The
+            // assets on disk get queued for delete; we don't run that
+            // queue immediately — ConverterForm.Action will overwrite the
+            // music folder and the deferred delete is harmless either way
+            // since it only runs on Save.
+            AssetManager.Headers.Remove(header);
+            MusicListBox.Items.Remove(header);
+            _actions[header.Ascii] = new Queue<Action>();
+            _actions[header.Ascii].Enqueue(() => AssetManager.DeleteAssets(header));
+            // Save now so the deferred delete happens before re-import.
+            // Otherwise ConverterForm refuses to import into a path that
+            // still exists on disk under the same ASCII code.
+            Save(AssetManager.MdbFilename);
+
+            // Drop the URL too — we'll re-record it once the new entry has
+            // an id. RenameUrl on the new id later if it changed.
+            MixUrlStore.RemoveUrl(AssetManager.MixPath, oldId);
+
+            // Reuse the standard ksm.dev download + import flow.
+            string tempDir = null;
+            string kshFile = null;
+            Exception downloadError = null;
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog =>
+                {
+                    try
+                    {
+                        dialog.SetStatus("Downloading from ksm.dev...");
+                        dialog.SetProgress(20f);
+                        using (var dl = new KsmDownloader())
+                        {
+                            tempDir = dl.DownloadAndExtract(url);
+                        }
+                        dialog.SetStatus("Locating chart...");
+                        dialog.SetProgress(80f);
+                        kshFile = KsmDownloader.FindKshFile(tempDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        downloadError = ex;
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                });
+                loader.ShowDialog();
+            }
+
+            if (downloadError != null)
+            {
+                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
+                MessageBox.Show(
+                    "Download failed:\n" + downloadError.Message,
+                    "Reconvert",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+                return;
+            }
+            if (kshFile == null)
+            {
+                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
+                MessageBox.Show(
+                    "The downloaded archive did not contain a .ksh file.",
+                    "Reconvert",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            try
+            {
+                using (var converter = new ConverterForm(kshFile, ConvertMode.Importer))
+                {
+                    if (converter.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    var newHeader = converter.Result;
+                    if (!_actions.ContainsKey(newHeader.Ascii))
+                        _actions[newHeader.Ascii] = new Queue<Action>();
+
+                    _pristine = false;
+                    AssetManager.Headers.Add(newHeader);
+                    MusicListBox.Items.Add(newHeader);
+                    ApplyCurrentSort();
+
+                    _actions[newHeader.Ascii].Enqueue(converter.Action);
+                    MixUrlStore.SetUrl(AssetManager.MixPath, newHeader.Id, url);
+
+                    if (_autosave)
+                        Save(AssetManager.MdbFilename);
+                }
+            }
+            finally
+            {
+                KsmDownloader.Cleanup(tempDir);
+            }
+        }
+
+        private void ShowImportSummary(string title, int succeeded, List<string> errors)
+        {
+            if (errors.Count == 0)
+            {
+                MessageBox.Show(
+                    $"Done. {succeeded} chart(s) imported.",
+                    title,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+            string msg = $"Done. {succeeded} chart(s) imported, {errors.Count} failed:\n";
+            int shown = Math.Min(errors.Count, 10);
+            for (int i = 0; i < shown; i++) msg += "\n- " + errors[i];
+            if (errors.Count > shown) msg += $"\n... and {errors.Count - shown} more.";
+            MessageBox.Show(msg, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private static string MakeSafeFolderName(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "chart";
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder(raw.Length);
+            foreach (char c in raw)
+                sb.Append(Array.IndexOf(invalid, c) >= 0 || c == ' ' ? '_' : c);
+            return sb.ToString();
         }
 
         private void OnAutosaveEditMenuClick(object sender, EventArgs e)
@@ -490,6 +954,7 @@ namespace VoxCharger
                     }
                 }
 
+                ApplyCurrentSort();
                 _pristine = false;
                 if (_autosave)
                     Save(AssetManager.MdbFilename);
@@ -605,6 +1070,7 @@ namespace VoxCharger
             _pristine = false;
             AssetManager.Headers.Add(header);
             MusicListBox.Items.Add(header);
+            ApplyCurrentSort();
         }
 
         private void OnSingleImportMenuClick(object sender, EventArgs e)
@@ -629,11 +1095,141 @@ namespace VoxCharger
                     _pristine = false;
                     AssetManager.Headers.Add(header);
                     MusicListBox.Items.Add(header);
+                    ApplyCurrentSort();
 
                     _actions[header.Ascii].Enqueue(converter.Action);
                     if (_autosave)
                         Save(AssetManager.MdbFilename);
                 }
+            }
+        }
+
+        // Import a chart straight from a ksm.dev song URL. Reuses the
+        // existing single-import flow so the user gets the same metadata
+        // confirmation form, audio normalization, and lead-in/tail policy
+        // ConverterForm runs for a local .ksh — they just don't have to
+        // download and unzip the chart manually.
+        //
+        // Accepts URLs in any of these shapes:
+        //   https://ksm.dev/songs/<uuid>
+        //   https://ksm.dev/songs/<uuid>/
+        //   https://ksm.dev/songs/<uuid>/download
+        // KsmDownloader.NormalizeDownloadUrl appends /download as needed.
+        private void OnImportKsmDevMenuClick(object sender, EventArgs e)
+        {
+            string url;
+            using (var prompt = new InputForm("Import from ksm.dev", "Paste a ksm.dev song URL:"))
+            {
+                if (prompt.ShowDialog() != DialogResult.OK)
+                    return;
+                url = prompt.Value;
+            }
+
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(
+                    "URL must start with http:// or https://",
+                    "Invalid URL",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            string tempDir = null;
+            string kshFile = null;
+            Exception downloadError = null;
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog =>
+                {
+                    try
+                    {
+                        dialog.SetStatus("Downloading from ksm.dev...");
+                        dialog.SetProgress(20f);
+                        using (var dl = new KsmDownloader())
+                        {
+                            tempDir = dl.DownloadAndExtract(url);
+                        }
+                        dialog.SetStatus("Locating chart...");
+                        dialog.SetProgress(80f);
+                        kshFile = KsmDownloader.FindKshFile(tempDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Bubble out via captured variable; LoadingForm
+                        // refuses to close while _completed is false, so
+                        // we must always call Complete() in finally.
+                        downloadError = ex;
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                });
+
+                loader.ShowDialog();
+            }
+
+            if (downloadError != null)
+            {
+                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
+                MessageBox.Show(
+                    "Download failed:\n" + downloadError.Message,
+                    "ksm.dev Import",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+                return;
+            }
+
+            if (kshFile == null)
+            {
+                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
+                MessageBox.Show(
+                    "The downloaded archive did not contain a .ksh file.",
+                    "ksm.dev Import",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            try
+            {
+                using (var converter = new ConverterForm(kshFile, ConvertMode.Importer))
+                {
+                    if (converter.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    var header = converter.Result;
+                    if (!_actions.ContainsKey(header.Ascii))
+                        _actions[header.Ascii] = new Queue<Action>();
+
+                    _pristine = false;
+                    AssetManager.Headers.Add(header);
+                    MusicListBox.Items.Add(header);
+                    ApplyCurrentSort();
+
+                    _actions[header.Ascii].Enqueue(converter.Action);
+
+                    // Remember the source URL so the user can later reconvert
+                    // straight from ksm.dev or export the mix as a manifest.
+                    MixUrlStore.SetUrl(AssetManager.MixPath, header.Id, url);
+
+                    if (_autosave)
+                        Save(AssetManager.MdbFilename);
+                }
+            }
+            finally
+            {
+                // ConverterForm.Action copies the chart files into the
+                // mix's music dir (or runs deferred), so by the time we
+                // reach here it's safe to drop the temp extraction.
+                KsmDownloader.Cleanup(tempDir);
             }
         }
 
@@ -663,11 +1259,94 @@ namespace VoxCharger
                         _actions[header.Ascii].Enqueue(converter.ActionSet[header.Ascii]);
                     }
 
+                    ApplyCurrentSort();
                     _pristine = false;
                     if (_autosave)
                         Save(AssetManager.MdbFilename);
                 }
             }
+        }
+
+        // Refresh the MusicListBox from the canonical AssetManager.Headers
+        // collection, applying the current search filter and sort. Called
+        // after every mutation (load, import, remove, rename, search edit,
+        // sort change). The kept name "ApplyCurrentSort" is historical —
+        // every existing call site benefits from the filter step too, so
+        // reusing the same method keeps the call graph straightforward.
+        // O(n) per call; up to a few thousand songs is well below
+        // user-perceptible.
+        private void ApplyCurrentSort()
+        {
+            if (AssetManager.Headers == null) return;
+
+            var headers = AssetManager.Headers.Where(MatchesSearch);
+            IEnumerable<VoxHeader> sorted;
+            switch (_sortMode)
+            {
+                case SortMode.TitleDesc:
+                    sorted = headers.OrderByDescending(h => h.Title ?? "", StringComparer.OrdinalIgnoreCase);
+                    break;
+                case SortMode.IdAsc:
+                    sorted = headers.OrderBy(h => h.Id);
+                    break;
+                case SortMode.IdDesc:
+                    sorted = headers.OrderByDescending(h => h.Id);
+                    break;
+                case SortMode.TitleAsc:
+                default:
+                    sorted = headers.OrderBy(h => h.Title ?? "", StringComparer.OrdinalIgnoreCase);
+                    break;
+            }
+
+            var keep = MusicListBox.SelectedItem;
+            MusicListBox.BeginUpdate();
+            MusicListBox.Items.Clear();
+            foreach (var h in sorted)
+                MusicListBox.Items.Add(h);
+            if (keep != null)
+            {
+                int idx = MusicListBox.Items.IndexOf(keep);
+                if (idx >= 0) MusicListBox.SelectedIndex = idx;
+            }
+            MusicListBox.EndUpdate();
+        }
+
+        private void SetSortMode(SortMode mode, string label)
+        {
+            _sortMode = mode;
+            SortButton.Text = "Sort: " + label;
+            ApplyCurrentSort();
+        }
+
+        private void OnSortByTitleAscClick(object sender, EventArgs e)  => SetSortMode(SortMode.TitleAsc,  "Title (A → Z)");
+        private void OnSortByTitleDescClick(object sender, EventArgs e) => SetSortMode(SortMode.TitleDesc, "Title (Z → A)");
+        private void OnSortByIdAscClick(object sender, EventArgs e)     => SetSortMode(SortMode.IdAsc,     "Music ID ↑");
+        private void OnSortByIdDescClick(object sender, EventArgs e)    => SetSortMode(SortMode.IdDesc,    "Music ID ↓");
+
+        // Substring match across the visible-ish fields. We deliberately
+        // include the music id so users can paste an id directly when they
+        // know which slot they want.
+        private bool MatchesSearch(VoxHeader h)
+        {
+            if (string.IsNullOrEmpty(_searchText)) return true;
+            if (h == null) return false;
+            string needle = _searchText;
+            return ContainsCi(h.Title, needle)
+                || ContainsCi(h.Artist, needle)
+                || ContainsCi(h.Ascii, needle)
+                || h.Id.ToString().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool ContainsCi(string haystack, string needle)
+        {
+            if (string.IsNullOrEmpty(haystack)) return false;
+            return haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void OnSearchTextBoxChanged(object sender, EventArgs e)
+        {
+            _searchText = SearchTextBox.Text != null ? SearchTextBox.Text.Trim() : string.Empty;
+            ApplyCurrentSort();
         }
 
         private void OnMetadataChanged(object sender, EventArgs e)
@@ -693,7 +1372,11 @@ namespace VoxCharger
                 {
                     // Rename asset folder if it exists
                     string oldPath = AssetManager.GetMusicPath(header);
+                    int oldId = header.Id;
                     header.Id = id;
+                    // Keep the sidecar URL keyed to the new id so reconvert
+                    // and export still find it after the rename.
+                    MixUrlStore.RenameUrl(AssetManager.MixPath, oldId, id);
                     string newPath = AssetManager.GetMusicPath(header);
 
                     if (Directory.Exists(oldPath) && !Directory.Exists(newPath))
@@ -816,6 +1499,10 @@ namespace VoxCharger
         #region --- Mix List Management ---
         private void OnMusicListBoxSelectedIndexChanged(object sender, EventArgs e)
         {
+            // Always refresh reconvert affordances on selection change so the
+            // visible button matches the new selection's URL status.
+            RefreshReconvertControls();
+
             if (!(MusicListBox.SelectedItem is VoxHeader header))
             {
                 MetadataGroupBox.Enabled = false;
@@ -918,7 +1605,10 @@ namespace VoxCharger
 
             AssetManager.Headers.Remove(header);
             MusicListBox.Items.Remove(header);
-           
+            // Drop the sidecar URL too so a stale id doesn't survive into a
+            // future export; orphaned URLs would just confuse the importer.
+            MixUrlStore.RemoveUrl(AssetManager.MixPath, header.Id);
+
             // Clear pending modification, since this asset will be deleted anyway
             _actions[header.Ascii] = new Queue<Action>();
             _actions[header.Ascii].Enqueue(() => AssetManager.DeleteAssets(header));
@@ -956,6 +1646,11 @@ namespace VoxCharger
 
                 loader.ShowDialog();
             }
+
+            // Apply the active sort once after the bulk add — much cheaper
+            // than re-sorting per-item, and AssetManager.Headers comes back
+            // in DB order, not user-visible order.
+            ApplyCurrentSort();
         }
 
         private bool Save(string dbFilename)
@@ -1139,6 +1834,8 @@ namespace VoxCharger
             SaveAsFileMenu.Enabled    = state;
             ChangeMixFileMenu.Enabled = state;
             DeleteMixFileMenu.Enabled = state && safe;
+            ExportMixFileMenu.Enabled = state && safe;
+            ImportMixFileMenu.Enabled = state && safe;
             AddButton.Enabled         = state && safe;
             AddEditMenu.Enabled       = state && safe;
             RemoveButton.Enabled      = state && safe;

@@ -40,6 +40,8 @@
             this.MenuSeparator2 = new System.Windows.Forms.MenuItem();
             this.ChangeMixFileMenu = new System.Windows.Forms.MenuItem();
             this.DeleteMixFileMenu = new System.Windows.Forms.MenuItem();
+            this.ExportMixFileMenu = new System.Windows.Forms.MenuItem();
+            this.ImportMixFileMenu = new System.Windows.Forms.MenuItem();
             this.MenuSeparator3 = new System.Windows.Forms.MenuItem();
             this.ExitFileMenu = new System.Windows.Forms.MenuItem();
             this.EditMenu = new System.Windows.Forms.MenuItem();
@@ -77,9 +79,20 @@
             this.ImportContextMenu = new System.Windows.Forms.ContextMenu();
             this.ImportVoxMenu = new System.Windows.Forms.MenuItem();
             this.ImportKshMenu = new System.Windows.Forms.MenuItem();
+            this.ImportKsmDevMenu = new System.Windows.Forms.MenuItem();
             this.MenuSeparator8 = new System.Windows.Forms.MenuItem();
             this.BulkImportKshMenu = new System.Windows.Forms.MenuItem();
             this.RemoveButton = new System.Windows.Forms.Button();
+            this.SortButton = new MenuButton();
+            this.SortContextMenu = new System.Windows.Forms.ContextMenu();
+            this.SortByTitleAscMenu = new System.Windows.Forms.MenuItem();
+            this.SortByTitleDescMenu = new System.Windows.Forms.MenuItem();
+            this.SortMenuSeparator1 = new System.Windows.Forms.MenuItem();
+            this.SortByIdAscMenu = new System.Windows.Forms.MenuItem();
+            this.SortByIdDescMenu = new System.Windows.Forms.MenuItem();
+            this.MusicListContextMenu = new System.Windows.Forms.ContextMenu();
+            this.ReconvertFromUrlMenu = new System.Windows.Forms.MenuItem();
+            this.SearchTextBox = new System.Windows.Forms.TextBox();
             this.MusicListBox = new System.Windows.Forms.ListBox();
             this.MetadataGroupBox = new System.Windows.Forms.GroupBox();
             this.ArtistYomiganaTextBox = new System.Windows.Forms.TextBox();
@@ -108,6 +121,7 @@
             this.VersionlLabel = new System.Windows.Forms.Label();
             this.VersionDropDown = new System.Windows.Forms.ComboBox();
             this.IdTextBox = new System.Windows.Forms.TextBox();
+            this.ReconvertButton = new System.Windows.Forms.Button();
             this.IdLabel = new System.Windows.Forms.Label();
             this.BpmLabel = new System.Windows.Forms.Label();
             this.BpmMinNumericBox = new System.Windows.Forms.NumericUpDown();
@@ -136,7 +150,7 @@
             // FileMenu
             // 
             this.FileMenu.Index = 0;
-            this.FileMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.NewFileMenu, this.OpenFileMenu, this.MenuSeparator1, this.SaveFileMenu, this.SaveAsFileMenu, this.MenuSeparator2, this.ChangeMixFileMenu, this.DeleteMixFileMenu, this.MenuSeparator3, this.ExitFileMenu });
+            this.FileMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.NewFileMenu, this.OpenFileMenu, this.MenuSeparator1, this.SaveFileMenu, this.SaveAsFileMenu, this.MenuSeparator2, this.ChangeMixFileMenu, this.DeleteMixFileMenu, this.ExportMixFileMenu, this.ImportMixFileMenu, this.MenuSeparator3, this.ExitFileMenu });
             this.FileMenu.Text = "File";
             // 
             // NewFileMenu
@@ -192,15 +206,29 @@
             this.DeleteMixFileMenu.Index = 7;
             this.DeleteMixFileMenu.Text = "Delete Mix";
             this.DeleteMixFileMenu.Click += new System.EventHandler(this.OnDeleteMixFileMenuClick);
-            // 
+            //
+            // ExportMixFileMenu
+            //
+            this.ExportMixFileMenu.Enabled = false;
+            this.ExportMixFileMenu.Index = 8;
+            this.ExportMixFileMenu.Text = "Export Mix..";
+            this.ExportMixFileMenu.Click += new System.EventHandler(this.OnExportMixFileMenuClick);
+            //
+            // ImportMixFileMenu
+            //
+            this.ImportMixFileMenu.Enabled = false;
+            this.ImportMixFileMenu.Index = 9;
+            this.ImportMixFileMenu.Text = "Import Mix..";
+            this.ImportMixFileMenu.Click += new System.EventHandler(this.OnImportMixFileMenuClick);
+            //
             // MenuSeparator3
-            // 
-            this.MenuSeparator3.Index = 8;
+            //
+            this.MenuSeparator3.Index = 10;
             this.MenuSeparator3.Text = "-";
-            // 
+            //
             // ExitFileMenu
-            // 
-            this.ExitFileMenu.Index = 9;
+            //
+            this.ExitFileMenu.Index = 11;
             this.ExitFileMenu.Shortcut = System.Windows.Forms.Shortcut.AltF4;
             this.ExitFileMenu.Text = "Exit";
             this.ExitFileMenu.Click += new System.EventHandler(this.OnExitFileMenuClick);
@@ -407,6 +435,8 @@
             this.MusicGroupBox.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) | System.Windows.Forms.AnchorStyles.Left) | System.Windows.Forms.AnchorStyles.Right)));
             this.MusicGroupBox.Controls.Add(this.AddButton);
             this.MusicGroupBox.Controls.Add(this.RemoveButton);
+            this.MusicGroupBox.Controls.Add(this.SortButton);
+            this.MusicGroupBox.Controls.Add(this.SearchTextBox);
             this.MusicGroupBox.Controls.Add(this.MusicListBox);
             this.MusicGroupBox.Enabled = false;
             this.MusicGroupBox.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
@@ -431,7 +461,7 @@
             //
             // ImportContextMenu
             //
-            this.ImportContextMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ImportVoxMenu, this.ImportKshMenu, this.MenuSeparator8, this.BulkImportKshMenu });
+            this.ImportContextMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ImportVoxMenu, this.ImportKshMenu, this.ImportKsmDevMenu, this.MenuSeparator8, this.BulkImportKshMenu });
             //
             // ImportVoxMenu
             //
@@ -445,14 +475,20 @@
             this.ImportKshMenu.Text = "Import Ksh..";
             this.ImportKshMenu.Click += new System.EventHandler(this.OnSingleImportMenuClick);
             //
+            // ImportKsmDevMenu
+            //
+            this.ImportKsmDevMenu.Index = 2;
+            this.ImportKsmDevMenu.Text = "Import from ksm.dev URL..";
+            this.ImportKsmDevMenu.Click += new System.EventHandler(this.OnImportKsmDevMenuClick);
+            //
             // MenuSeparator8
             //
-            this.MenuSeparator8.Index = 2;
+            this.MenuSeparator8.Index = 3;
             this.MenuSeparator8.Text = "-";
             //
             // BulkImportKshMenu
             //
-            this.BulkImportKshMenu.Index = 3;
+            this.BulkImportKshMenu.Index = 4;
             this.BulkImportKshMenu.Text = "Bulk Import Ksh..";
             this.BulkImportKshMenu.Click += new System.EventHandler(this.OnBulkImportKshMenuClick);
             //
@@ -468,17 +504,84 @@
             this.RemoveButton.UseVisualStyleBackColor = true;
             this.RemoveButton.Click += new System.EventHandler(this.OnRemoveButtonClick);
             //
+            // SortButton
+            //
+            this.SortButton.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) | System.Windows.Forms.AnchorStyles.Right)));
+            this.SortButton.Location = new System.Drawing.Point(6, 19);
+            this.SortButton.Menu = this.SortContextMenu;
+            this.SortButton.Name = "SortButton";
+            this.SortButton.Size = new System.Drawing.Size(246, 23);
+            this.SortButton.SplitWidth = 17;
+            this.SortButton.TabIndex = 6;
+            this.SortButton.Text = "Sort: Title (A → Z)";
+            this.SortButton.UseVisualStyleBackColor = true;
+            //
+            // SortContextMenu
+            //
+            this.SortContextMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.SortByTitleAscMenu, this.SortByTitleDescMenu, this.SortMenuSeparator1, this.SortByIdAscMenu, this.SortByIdDescMenu });
+            //
+            // SortByTitleAscMenu
+            //
+            this.SortByTitleAscMenu.Index = 0;
+            this.SortByTitleAscMenu.Text = "Title (A → Z)";
+            this.SortByTitleAscMenu.Click += new System.EventHandler(this.OnSortByTitleAscClick);
+            //
+            // SortByTitleDescMenu
+            //
+            this.SortByTitleDescMenu.Index = 1;
+            this.SortByTitleDescMenu.Text = "Title (Z → A)";
+            this.SortByTitleDescMenu.Click += new System.EventHandler(this.OnSortByTitleDescClick);
+            //
+            // SortMenuSeparator1
+            //
+            this.SortMenuSeparator1.Index = 2;
+            this.SortMenuSeparator1.Text = "-";
+            //
+            // SortByIdAscMenu
+            //
+            this.SortByIdAscMenu.Index = 3;
+            this.SortByIdAscMenu.Text = "Music ID ↑";
+            this.SortByIdAscMenu.Click += new System.EventHandler(this.OnSortByIdAscClick);
+            //
+            // SortByIdDescMenu
+            //
+            this.SortByIdDescMenu.Index = 4;
+            this.SortByIdDescMenu.Text = "Music ID ↓";
+            this.SortByIdDescMenu.Click += new System.EventHandler(this.OnSortByIdDescClick);
+            //
+            // SearchTextBox
+            //
+            this.SearchTextBox.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) | System.Windows.Forms.AnchorStyles.Right)));
+            this.SearchTextBox.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SearchTextBox.Location = new System.Drawing.Point(6, 47);
+            this.SearchTextBox.Name = "SearchTextBox";
+            this.SearchTextBox.Size = new System.Drawing.Size(246, 21);
+            this.SearchTextBox.TabIndex = 7;
+            this.SearchTextBox.TextChanged += new System.EventHandler(this.OnSearchTextBoxChanged);
+            //
             // MusicListBox
             //
             this.MusicListBox.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) | System.Windows.Forms.AnchorStyles.Left) | System.Windows.Forms.AnchorStyles.Right)));
+            this.MusicListBox.ContextMenu = this.MusicListContextMenu;
             this.MusicListBox.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.MusicListBox.FormattingEnabled = true;
-            this.MusicListBox.Location = new System.Drawing.Point(6, 19);
+            this.MusicListBox.Location = new System.Drawing.Point(6, 74);
             this.MusicListBox.Name = "MusicListBox";
-            this.MusicListBox.Size = new System.Drawing.Size(246, 433);
-            this.MusicListBox.Sorted = true;
+            this.MusicListBox.Size = new System.Drawing.Size(246, 378);
+            this.MusicListBox.Sorted = false;
             this.MusicListBox.TabIndex = 2;
             this.MusicListBox.SelectedIndexChanged += new System.EventHandler(this.OnMusicListBoxSelectedIndexChanged);
+            //
+            // MusicListContextMenu
+            //
+            this.MusicListContextMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ReconvertFromUrlMenu });
+            this.MusicListContextMenu.Popup += new System.EventHandler(this.OnMusicListContextMenuPopup);
+            //
+            // ReconvertFromUrlMenu
+            //
+            this.ReconvertFromUrlMenu.Index = 0;
+            this.ReconvertFromUrlMenu.Text = "Reconvert from ksm.dev URL";
+            this.ReconvertFromUrlMenu.Click += new System.EventHandler(this.OnReconvertFromUrlClick);
             //
             // MetadataGroupBox
             //
@@ -496,6 +599,7 @@
             this.MetadataGroupBox.Controls.Add(this.VersionlLabel);
             this.MetadataGroupBox.Controls.Add(this.VersionDropDown);
             this.MetadataGroupBox.Controls.Add(this.IdTextBox);
+            this.MetadataGroupBox.Controls.Add(this.ReconvertButton);
             this.MetadataGroupBox.Controls.Add(this.IdLabel);
             this.MetadataGroupBox.Controls.Add(this.BpmLabel);
             this.MetadataGroupBox.Controls.Add(this.BpmMinNumericBox);
@@ -813,8 +917,21 @@
             this.IdTextBox.Location = new System.Drawing.Point(83, 23);
             this.IdTextBox.Name = "IdTextBox";
             this.IdTextBox.ReadOnly = true;
-            this.IdTextBox.Size = new System.Drawing.Size(383, 21);
+            this.IdTextBox.Size = new System.Drawing.Size(269, 21);
             this.IdTextBox.TabIndex = 1;
+            //
+            // ReconvertButton
+            //
+            this.ReconvertButton.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.ReconvertButton.Enabled = false;
+            this.ReconvertButton.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.ReconvertButton.Location = new System.Drawing.Point(358, 22);
+            this.ReconvertButton.Name = "ReconvertButton";
+            this.ReconvertButton.Size = new System.Drawing.Size(108, 23);
+            this.ReconvertButton.TabIndex = 35;
+            this.ReconvertButton.Text = "Reconvert";
+            this.ReconvertButton.UseVisualStyleBackColor = true;
+            this.ReconvertButton.Click += new System.EventHandler(this.OnReconvertFromUrlClick);
             //
             // IdLabel
             //
@@ -967,6 +1084,7 @@
         private System.Windows.Forms.Label BpmLabel;
         private System.Windows.Forms.NumericUpDown BpmMinNumericBox;
         private System.Windows.Forms.TextBox IdTextBox;
+        private System.Windows.Forms.Button ReconvertButton;
         private System.Windows.Forms.Label IdLabel;
         private System.Windows.Forms.MenuItem ToolsMenu;
         private System.Windows.Forms.MenuItem ConvertToolsMenu;
@@ -994,6 +1112,8 @@
         private System.Windows.Forms.MenuItem MenuSeparator1;
         private System.Windows.Forms.MenuItem ChangeMixFileMenu;
         private System.Windows.Forms.MenuItem DeleteMixFileMenu;
+        private System.Windows.Forms.MenuItem ExportMixFileMenu;
+        private System.Windows.Forms.MenuItem ImportMixFileMenu;
         private System.Windows.Forms.DateTimePicker DistributionPicker;
         private System.Windows.Forms.Label ReleaseLabel;
         private System.Windows.Forms.MenuItem SaveFileMenu;
@@ -1012,8 +1132,19 @@
         private System.Windows.Forms.MenuItem MusicFileBuilder;
         private System.Windows.Forms.MenuItem S3VFileBuilder;
         private MenuButton AddButton;
+        private MenuButton SortButton;
+        private System.Windows.Forms.ContextMenu SortContextMenu;
+        private System.Windows.Forms.MenuItem SortByTitleAscMenu;
+        private System.Windows.Forms.MenuItem SortByTitleDescMenu;
+        private System.Windows.Forms.MenuItem SortMenuSeparator1;
+        private System.Windows.Forms.MenuItem SortByIdAscMenu;
+        private System.Windows.Forms.MenuItem SortByIdDescMenu;
+        private System.Windows.Forms.ContextMenu MusicListContextMenu;
+        private System.Windows.Forms.MenuItem ReconvertFromUrlMenu;
+        private System.Windows.Forms.TextBox SearchTextBox;
         private System.Windows.Forms.ContextMenu ImportContextMenu;
         private System.Windows.Forms.MenuItem ImportKshMenu;
+        private System.Windows.Forms.MenuItem ImportKsmDevMenu;
         private System.Windows.Forms.MenuItem ImportVoxMenu;
         private System.Windows.Forms.MenuItem AddNewEditMenu;
         private System.Windows.Forms.MenuItem ImportKshEditMenu;

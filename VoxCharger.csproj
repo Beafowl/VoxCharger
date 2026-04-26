@@ -207,6 +207,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Sources\AssetManager.cs" />
+    <Compile Include="Sources\IconLoader.cs" />
+    <Compile Include="Sources\MixUrlStore.cs" />
+    <Compile Include="Sources\MixManifest.cs" />
     <Compile Include="Sources\Remote\RemoteModels.cs" />
     <Compile Include="Sources\Remote\RemoteMixClient.cs" />
     <Compile Include="Sources\Remote\KsmDownloader.cs" />
@@ -244,6 +247,7 @@
       <DependentUpon>HelpForm.cs</DependentUpon>
     </Compile>
     <Compile Include="Sources\Encoders\DxEncoder.cs" />
+    <Compile Include="Sources\Encoders\LoudnessNormalizer.cs" />
     <Compile Include="Sources\Events\Controller\Camera.cs" />
     <Compile Include="Sources\Events\Controller\Radian.cs" />
     <Compile Include="Sources\Events\Controller\LaneClear.cs" />
@@ -271,6 +275,7 @@
     <Compile Include="Sources\Encoders\S3VTool.cs" />
     <Compile Include="Sources\Ksh\Exporter.cs" />
     <Compile Include="Sources\Ksh\Ksh.cs" />
+    <Compile Include="Sources\Ksh\Ksh.LeadIn.cs" />
     <Compile Include="Sources\Events\EventCollection.cs" />
     <Compile Include="Sources\Events\Event.cs" />
     <Compile Include="Sources\Ksh\KshDefinition.cs" />
@@ -284,6 +289,7 @@
     <Compile Include="Sources\Vox\VoxChart.cs" />
     <Compile Include="Sources\Vox\VoxLevelHeader.cs" />
     <Compile Include="Sources\Vox\RadarCalculator.cs" />
+    <Compile Include="Sources\Vox\RadarCalibrator.cs" />
     <Compile Include="Sources\Forms\AboutForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -381,7 +387,8 @@
   <ItemGroup>
     <Content Include="FodyWeavers.xml" />
     <Content Include="README.md" />
-    <Content Include="Resources\icon.ico" />
+    <EmbeddedResource Include="Resources\icon.ico" />
+    <EmbeddedResource Include="Resources\icon_dark.ico" />
     <None Include="Resources\jk_dummy_s.png" />
     <None Include="Resources\jk_dummy_b.png" />
     <None Include="Resources\jk_dummy.png" />
