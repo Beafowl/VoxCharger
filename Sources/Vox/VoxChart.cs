@@ -55,19 +55,22 @@ namespace VoxCharger
                 {
                     if (current == Section.NoState)
                     {
+                        // Normalize header and enum names to uppercase with underscores and
+                        // spaces stripped: real Konami vox files use headers like
+                        // "#TAB EFFECT INFO" which must match the "TabEffect" enum name.
                         var candidate = Section.NoState;
-                        string header = line.Substring(1).Trim().Replace(' ', '_');
+                        string header = line.Substring(1).Trim().Replace(' ', '_').Replace("_", "").ToUpperInvariant();
                         foreach (Section section in Enum.GetValues(typeof(Section)))
                         {
                             // e.g there's BPM and BPM_INFO, make sure simple BPM isn't registered as BPM_INFO
-                            string name = Enum.GetName(typeof(Section), section);
+                            string name = Enum.GetName(typeof(Section), section).ToUpperInvariant();
                             if (header == name)
                             {
                                 current = section;
                                 break;
                             }
                             else if (header.StartsWith(name))
-                                candidate = section; 
+                                candidate = section;
                         }
 
                         if (current == Section.NoState)
