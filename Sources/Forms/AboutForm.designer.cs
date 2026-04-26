@@ -37,6 +37,8 @@
             this.label4 = new System.Windows.Forms.Label();
             this.CloseButton = new System.Windows.Forms.Button();
             this.GithubLinkLabel = new System.Windows.Forms.LinkLabel();
+            this.ModifiedByLabel = new System.Windows.Forms.Label();
+            this.ForkLinkLabel = new System.Windows.Forms.LinkLabel();
             ((System.ComponentModel.ISupportInitialize)(this.ProfilePictureBox)).BeginInit();
             this.SuspendLayout();
             // 
@@ -97,7 +99,7 @@
             this.label4.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left)));
             this.label4.AutoSize = true;
             this.label4.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.label4.Location = new System.Drawing.Point(21, 118);
+            this.label4.Location = new System.Drawing.Point(21, 152);
             this.label4.Name = "label4";
             this.label4.Size = new System.Drawing.Size(250, 26);
             this.label4.TabIndex = 5;
@@ -106,7 +108,7 @@
             // CloseButton
             // 
             this.CloseButton.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left) | System.Windows.Forms.AnchorStyles.Right)));
-            this.CloseButton.Location = new System.Drawing.Point(21, 151);
+            this.CloseButton.Location = new System.Drawing.Point(21, 185);
             this.CloseButton.Name = "CloseButton";
             this.CloseButton.Size = new System.Drawing.Size(292, 26);
             this.CloseButton.TabIndex = 6;
@@ -125,13 +127,35 @@
             this.GithubLinkLabel.TabStop = true;
             this.GithubLinkLabel.Text = "https://github.com/SirusDoma/VoxCharger";
             this.GithubLinkLabel.LinkClicked += new System.Windows.Forms.LinkLabelLinkClickedEventHandler(this.OnGithubLinkLabelLinkClicked);
+            //
+            // ModifiedByLabel
+            //
+            this.ModifiedByLabel.AutoSize = true;
+            this.ModifiedByLabel.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Italic, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.ModifiedByLabel.Location = new System.Drawing.Point(21, 110);
+            this.ModifiedByLabel.Name = "ModifiedByLabel";
+            this.ModifiedByLabel.TabIndex = 8;
+            this.ModifiedByLabel.Text = "This build is a fork modified by Beafowl.";
+            //
+            // ForkLinkLabel
+            //
+            this.ForkLinkLabel.AutoSize = true;
+            this.ForkLinkLabel.Font = new System.Drawing.Font("Tahoma", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.ForkLinkLabel.Location = new System.Drawing.Point(21, 126);
+            this.ForkLinkLabel.Name = "ForkLinkLabel";
+            this.ForkLinkLabel.TabIndex = 9;
+            this.ForkLinkLabel.TabStop = true;
+            this.ForkLinkLabel.Text = "https://github.com/Beafowl/VoxCharger";
+            this.ForkLinkLabel.LinkClicked += new System.Windows.Forms.LinkLabelLinkClickedEventHandler(this.OnGithubLinkLabelLinkClicked);
             // 
             // AboutForm
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.BackColor = System.Drawing.SystemColors.Control;
-            this.ClientSize = new System.Drawing.Size(334, 189);
+            this.ClientSize = new System.Drawing.Size(334, 223);
+            this.Controls.Add(this.ForkLinkLabel);
+            this.Controls.Add(this.ModifiedByLabel);
             this.Controls.Add(this.GithubLinkLabel);
             this.Controls.Add(this.CloseButton);
             this.Controls.Add(this.label4);
@@ -163,5 +187,7 @@
         private System.Windows.Forms.LinkLabel EmailLinkLabel;
         private System.Windows.Forms.Label label4;
         private System.Windows.Forms.Button CloseButton;
+        private System.Windows.Forms.Label ModifiedByLabel;
+        private System.Windows.Forms.LinkLabel ForkLinkLabel;
     }
 }
