@@ -507,6 +507,139 @@ namespace VoxCharger
             }
         }
 
+        // Read an Asphyxia curated-list JSON, download every importable
+        // chart's zip from its stored ksm.dev CDN URL, and import each
+        // one into the currently-loaded mix preserving the music id the
+        // server assigned. Use case is rebuilding a client mix without
+        // having to round-trip through the Asphyxia server's filesystem
+        // copy of music_db.merged.xml.
+        private void OnImportAsphyxiaMenuClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(AssetManager.MixPath))
+            {
+                MessageBox.Show(
+                    "Open or create a mix before importing an Asphyxia list.",
+                    "Import Asphyxia list",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+
+            string listPath;
+            using (var browser = new OpenFileDialog())
+            {
+                browser.Filter = "Asphyxia curated list (*.json)|*.json|All Files|*.*";
+                browser.Title  = "Import Asphyxia curated list";
+                if (browser.ShowDialog() != DialogResult.OK)
+                    return;
+                listPath = browser.FileName;
+            }
+
+            AsphyxiaList.Bundle bundle;
+            try
+            {
+                bundle = AsphyxiaList.LoadFile(listPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "Failed to read list:\n" + ex.Message,
+                    "Import Asphyxia list",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+                return;
+            }
+
+            if (bundle == null || bundle.songs == null || bundle.songs.Count == 0)
+            {
+                MessageBox.Show(
+                    "List contains no songs.",
+                    "Import Asphyxia list",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            var importable = bundle.songs.Where(AsphyxiaList.IsImportable).ToList();
+            int skipped    = bundle.songs.Count - importable.Count;
+
+            if (importable.Count == 0)
+            {
+                MessageBox.Show(
+                    $"No importable songs in this list ({bundle.songs.Count} total; " +
+                    "all skipped because they're not yet ready, have no music id, " +
+                    "or have no download URL).",
+                    "Import Asphyxia list",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                $"Found {importable.Count} importable chart(s) ({skipped} skipped).\n\n" +
+                "VoxCharger will download each chart from ksm.dev and import it " +
+                "with the server-assigned music id preserved. Existing entries at " +
+                "the same id will be replaced.\n\nProceed?",
+                "Import Asphyxia list",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question
+            );
+            if (confirm != DialogResult.Yes) return;
+
+            AsphyxiaImporter.Result result = null;
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog =>
+                {
+                    var progress = new AsphyxiaImporter.Progress
+                    {
+                        Status  = s => dialog.SetStatus(s),
+                        Percent = p => dialog.SetProgress(p),
+                    };
+                    try
+                    {
+                        result = AsphyxiaImporter.Run(importable, progress);
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                });
+                loader.ShowDialog();
+            }
+
+            if (result == null || result.Imported == 0)
+            {
+                ShowImportSummary("Import Asphyxia list", 0, result?.Errors ?? new List<string>());
+                return;
+            }
+
+            try
+            {
+                Save(AssetManager.MdbFilename);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "Charts were imported but saving music_db failed:\n" + ex.Message,
+                    "Import Asphyxia list",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+            }
+
+            // Headers were added directly to AssetManager.Headers in the
+            // background thread; refresh the in-memory listbox to match.
+            LoadMusicDb();
+            _pristine = true;
+
+            ShowImportSummary("Import Asphyxia list", result.Imported, result.Errors);
+        }
+
         // True when the currently-selected chart has a ksm.dev URL recorded
         // in the mix's sidecar — i.e. when "Reconvert from URL" can do
         // anything useful.
@@ -959,6 +1092,26 @@ namespace VoxCharger
                 if (_autosave)
                     Save(AssetManager.MdbFilename);
             }
+        }
+
+        private void OnRepairMixToolsMenuClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(AssetManager.MixPath))
+            {
+                MessageBox.Show(this, "No mix is loaded. Open or create a mix first.", "Repair Mix",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var form = new RepairForm())
+                form.ShowDialog(this);
+
+            // Repair may have updated music_db; refresh the visible list to
+            // pick up any radar/jacket changes from re-exported entries.
+            MusicListBox.Items.Clear();
+            foreach (var h in AssetManager.Headers)
+                MusicListBox.Items.Add(h);
+            ApplyCurrentSort();
         }
 
         private void OnAboutHelpMenuClick(object sender, EventArgs e)

@@ -17,9 +17,20 @@ namespace VoxCharger
 
         public string DownloadAndExtract(string ksmUrl)
         {
-            string downloadUrl = NormalizeDownloadUrl(ksmUrl);
+            return DownloadAndExtractInternal(NormalizeDownloadUrl(ksmUrl));
+        }
 
-            byte[] zipData = _http.DownloadData(downloadUrl);
+        // Used when the URL is already a direct asset link (e.g. Asphyxia's
+        // nauticaExportList stores ksm.dev CDN URLs that point straight at
+        // the chart zip — appending /download to those would 404).
+        public string DownloadAndExtractDirect(string zipUrl)
+        {
+            return DownloadAndExtractInternal(zipUrl);
+        }
+
+        private string DownloadAndExtractInternal(string url)
+        {
+            byte[] zipData = _http.DownloadData(url);
             string tempDir = Path.Combine(Path.GetTempPath(), "VoxCharger_" + Path.GetRandomFileName());
             Directory.CreateDirectory(tempDir);
 

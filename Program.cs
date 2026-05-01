@@ -82,6 +82,18 @@ namespace VoxCharger
                 return;
             }
 
+            if (input == "--repair")
+            {
+                RunRepairMix(argList);
+                return;
+            }
+
+            if (input == "--asphyxia-import")
+            {
+                RunAsphyxiaImport(argList);
+                return;
+            }
+
             string output = argList.Count > 1 ? argList[1] : null;
 
             if (File.Exists(input))
@@ -671,6 +683,195 @@ namespace VoxCharger
             Console.WriteLine($"Done. {success} converted, {failed} failed.");
         }
 
+        private static void RunRepairMix(List<string> argList)
+        {
+            string gamePath = null;
+            string mixName  = null;
+            bool   apply    = false;
+
+            for (int i = 1; i < argList.Count; i++)
+            {
+                switch (argList[i])
+                {
+                    case "--game-path": if (i + 1 < argList.Count) gamePath = argList[++i]; break;
+                    case "--mix":       if (i + 1 < argList.Count) mixName  = argList[++i]; break;
+                    case "--apply":     apply = true; break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(gamePath) || string.IsNullOrEmpty(mixName))
+            {
+                Console.Error.WriteLine("Error: --repair requires --game-path and --mix");
+                Console.Error.WriteLine("Usage: VoxCharger.exe --repair --game-path <path> --mix <name> [--apply]");
+                Console.Error.WriteLine("  Without --apply, prints status only (dry-run).");
+                Console.Error.WriteLine("  With --apply, re-exports any chart whose source is reachable and whose");
+                Console.Error.WriteLine("  outputs or sources have drifted.");
+                return;
+            }
+
+            try
+            {
+                AssetManager.Initialize(gamePath);
+                AssetManager.LoadMix(mixName);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Failed to load mix: {ex.Message}");
+                return;
+            }
+
+            var reports = MixRepairer.Verify();
+            int ok = 0, outDrift = 0, srcDrift = 0, srcMissing = 0, noEntry = 0;
+
+            foreach (var r in reports)
+            {
+                switch (r.Status)
+                {
+                    case ChartStatus.Ok:             ok++;          break;
+                    case ChartStatus.OutputDrift:    outDrift++;    break;
+                    case ChartStatus.SourceDrift:    srcDrift++;    break;
+                    case ChartStatus.SourceMissing:  srcMissing++;  break;
+                    case ChartStatus.NotInManifest:  noEntry++;     break;
+                }
+            }
+
+            Console.WriteLine($"Mix '{mixName}': {reports.Count} charts");
+            Console.WriteLine($"  ok:             {ok}");
+            Console.WriteLine($"  output drift:   {outDrift}  (will repair with --apply)");
+            Console.WriteLine($"  source drift:   {srcDrift}  (will repair with --apply)");
+            Console.WriteLine($"  source missing: {srcMissing} (cannot auto-repair)");
+            Console.WriteLine($"  not in manifest:{noEntry}    (legacy, no source recorded)");
+
+            foreach (var r in reports)
+            {
+                if (r.Status == ChartStatus.Ok) continue;
+                Console.WriteLine($"  [{r.Status,-14}] {r.Id:D4} {r.CodeName} — {r.Detail}");
+            }
+
+            if (!apply) return;
+
+            int repaired = 0, failed = 0;
+            foreach (var r in reports)
+            {
+                if (r.Status != ChartStatus.OutputDrift && r.Status != ChartStatus.SourceDrift) continue;
+                try
+                {
+                    Console.Write($"Repairing {r.Id:D4} {r.CodeName}... ");
+                    MixRepairer.Repair(r);
+                    Console.WriteLine("ok");
+                    repaired++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"FAILED: {ex.Message}");
+                    failed++;
+                }
+            }
+
+            if (repaired > 0)
+                AssetManager.Headers.Save(AssetManager.MdbFilename);
+
+            Console.WriteLine($"Done. {repaired} repaired, {failed} failed.");
+        }
+
+        // CLI entry for `--asphyxia-import <list.json> --game-path <path>
+        // --mix <name>`. Reads a curated list exported from the Asphyxia
+        // server (nauticaExportList output), downloads each chart's zip
+        // from its stored ksm.dev CDN URL, runs the standard convert
+        // pipeline preserving each chart's mid, and saves music_db once
+        // at the end. Use case is rebuilding a client mix without having
+        // to round-trip through the Asphyxia server's filesystem copy.
+        private static void RunAsphyxiaImport(List<string> argList)
+        {
+            string listPath = null;
+            string gamePath = null;
+            string mixName  = null;
+
+            for (int i = 1; i < argList.Count; i++)
+            {
+                switch (argList[i])
+                {
+                    case "--game-path":
+                        if (i + 1 < argList.Count) gamePath = argList[++i];
+                        break;
+                    case "--mix":
+                        if (i + 1 < argList.Count) mixName  = argList[++i];
+                        break;
+                    default:
+                        if (listPath == null) listPath = argList[i];
+                        break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(listPath) || string.IsNullOrEmpty(gamePath) || string.IsNullOrEmpty(mixName))
+            {
+                Console.Error.WriteLine("Error: --asphyxia-import requires <list.json>, --game-path, and --mix");
+                Console.Error.WriteLine("Usage: VoxCharger.exe --asphyxia-import <list.json> --game-path <path> --mix <name>");
+                return;
+            }
+
+            if (!File.Exists(listPath))
+            {
+                Console.Error.WriteLine($"Error: list file not found: {listPath}");
+                return;
+            }
+
+            AsphyxiaList.Bundle bundle;
+            try
+            {
+                bundle = AsphyxiaList.LoadFile(listPath);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: failed to read list: {ex.Message}");
+                return;
+            }
+
+            if (bundle == null || bundle.songs == null || bundle.songs.Count == 0)
+            {
+                Console.Error.WriteLine("Error: list contains no songs.");
+                return;
+            }
+
+            var importable = bundle.songs.Where(AsphyxiaList.IsImportable).ToList();
+            int skipped = bundle.songs.Count - importable.Count;
+            Console.WriteLine($"Loaded list: {bundle.songs.Count} song(s); {importable.Count} importable, {skipped} skipped.");
+            if (importable.Count == 0) return;
+
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                AssetManager.Initialize(gamePath);
+                LoadOrRepairMix(gamePath, mixName);
+
+                var progress = new AsphyxiaImporter.Progress
+                {
+                    Status  = s => Console.WriteLine($"[asphyxia] {s}"),
+                    Log     = s => Console.WriteLine(s),
+                    // Percent is meaningless on the CLI — the per-chart log
+                    // lines already give a clear sense of progress.
+                };
+
+                var result = AsphyxiaImporter.Run(importable, progress);
+                AssetManager.Headers.Save(AssetManager.MdbFilename);
+
+                sw.Stop();
+                Console.WriteLine();
+                Console.WriteLine($"Done! {result.Imported} imported, {result.Failed} failed in {sw.Elapsed.TotalSeconds:F1}s");
+                if (result.Errors.Count > 0)
+                {
+                    Console.WriteLine("Errors:");
+                    foreach (var e in result.Errors) Console.WriteLine("  - " + e);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+                if (DebugMode) Console.Error.WriteLine(ex.StackTrace);
+                Environment.ExitCode = 1;
+            }
+        }
+
         private static void RunCalibrateRadar(List<string> argList)
         {
             string gameData = null;
@@ -716,6 +917,15 @@ namespace VoxCharger
                 );
             }
             return new Ksh.ParseOption { LeadInMeasures = measures };
+        }
+
+        // Public hook for AsphyxiaImporter (different file, same assembly,
+        // can't reach private members directly). Same behavior as the CLI
+        // wrapper — applies the lead-in shift and returns the matching
+        // ParseOption for per-difficulty re-parses.
+        internal static Ksh.ParseOption ApplyLeadInAndTailPublic(Ksh ksh, AudioImportOptions audioOptions)
+        {
+            return ApplyLeadInAndTail(ksh, audioOptions);
         }
 
         private static void LoadOrRepairMix(string gamePath, string mixName)
@@ -771,6 +981,17 @@ namespace VoxCharger
             Console.WriteLine("  VoxCharger.exe --calibrate-radar <game_data_dir> [--csv <output.csv>]");
             Console.WriteLine("  Fits RadarCalculator coefficients against official Konami radar values.");
             Console.WriteLine("  <game_data_dir> should contain `others/music_db.xml` and `music/`.");
+            Console.WriteLine();
+            Console.WriteLine("Repair Mix:");
+            Console.WriteLine("  VoxCharger.exe --repair --game-path <path> --mix <name> [--apply]");
+            Console.WriteLine("  Verifies each imported chart against its recorded manifest hashes.");
+            Console.WriteLine("  Prints a status report; with --apply also re-exports drifted charts.");
+            Console.WriteLine();
+            Console.WriteLine("Import from Asphyxia curated list:");
+            Console.WriteLine("  VoxCharger.exe --asphyxia-import <list.json> --game-path <path> --mix <name>");
+            Console.WriteLine("  Reads a JSON exported by Asphyxia's nauticaExportList endpoint,");
+            Console.WriteLine("  downloads each ready chart from its ksm.dev CDN URL, and imports");
+            Console.WriteLine("  them with the server-assigned music ids preserved.");
             Console.WriteLine();
             Console.WriteLine("Options:");
             Console.WriteLine("  -h, --help    Show this help message");

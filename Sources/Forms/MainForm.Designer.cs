@@ -50,6 +50,7 @@
             this.ImportKshEditMenu = new System.Windows.Forms.MenuItem();
             this.MenuSeparator7 = new System.Windows.Forms.MenuItem();
             this.BulkImportKshEditMenu = new System.Windows.Forms.MenuItem();
+            this.ImportAsphyxiaEditMenu = new System.Windows.Forms.MenuItem();
             this.RemoveEditMenu = new System.Windows.Forms.MenuItem();
             this.MenuSeparator4 = new System.Windows.Forms.MenuItem();
             this.ImportAudioEditMenu = new System.Windows.Forms.MenuItem();
@@ -68,6 +69,7 @@
             this.MusicFileBuilder = new System.Windows.Forms.MenuItem();
             this.S3VFileBuilder = new System.Windows.Forms.MenuItem();
             this.ToolsSeparator1 = new System.Windows.Forms.MenuItem();
+            this.RepairMixToolsMenu = new System.Windows.Forms.MenuItem();
             this.RemoteMixesToolsMenu = new System.Windows.Forms.MenuItem();
             this.HelpMenu = new System.Windows.Forms.MenuItem();
             this.AboutHelpMenu = new System.Windows.Forms.MenuItem();
@@ -82,6 +84,7 @@
             this.ImportKsmDevMenu = new System.Windows.Forms.MenuItem();
             this.MenuSeparator8 = new System.Windows.Forms.MenuItem();
             this.BulkImportKshMenu = new System.Windows.Forms.MenuItem();
+            this.ImportAsphyxiaMenu = new System.Windows.Forms.MenuItem();
             this.RemoveButton = new System.Windows.Forms.Button();
             this.SortButton = new MenuButton();
             this.SortContextMenu = new System.Windows.Forms.ContextMenu();
@@ -243,7 +246,7 @@
             // AddEditMenu
             // 
             this.AddEditMenu.Index = 0;
-            this.AddEditMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.AddNewEditMenu, this.ImportKshEditMenu, this.MenuSeparator7, this.BulkImportKshEditMenu });
+            this.AddEditMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.AddNewEditMenu, this.ImportKshEditMenu, this.MenuSeparator7, this.BulkImportKshEditMenu, this.ImportAsphyxiaEditMenu });
             this.AddEditMenu.Shortcut = System.Windows.Forms.Shortcut.Ins;
             this.AddEditMenu.Text = "Add";
             // 
@@ -265,10 +268,16 @@
             this.MenuSeparator7.Text = "-";
             // 
             // BulkImportKshEditMenu
-            // 
+            //
             this.BulkImportKshEditMenu.Index = 3;
             this.BulkImportKshEditMenu.Text = "Bulk Import Ksh..";
             this.BulkImportKshEditMenu.Click += new System.EventHandler(this.OnBulkImportKshMenuClick);
+            //
+            // ImportAsphyxiaEditMenu
+            //
+            this.ImportAsphyxiaEditMenu.Index = 4;
+            this.ImportAsphyxiaEditMenu.Text = "Import from Asphyxia list..";
+            this.ImportAsphyxiaEditMenu.Click += new System.EventHandler(this.OnImportAsphyxiaMenuClick);
             // 
             // RemoveEditMenu
             // 
@@ -324,7 +333,7 @@
             // ToolsMenu
             // 
             this.ToolsMenu.Index = 2;
-            this.ToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ConvertToolsMenu, this.VoxConverterToolsMenu, this.MusicFileBuilder, this.S3VFileBuilder, this.ToolsSeparator1, this.RemoteMixesToolsMenu });
+            this.ToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ConvertToolsMenu, this.VoxConverterToolsMenu, this.MusicFileBuilder, this.S3VFileBuilder, this.ToolsSeparator1, this.RepairMixToolsMenu, this.RemoteMixesToolsMenu });
             this.ToolsMenu.Text = "Tools";
             //
             // ConvertToolsMenu
@@ -379,6 +388,11 @@
             // ToolsSeparator1
             //
             this.ToolsSeparator1.Text = "-";
+            //
+            // RepairMixToolsMenu
+            //
+            this.RepairMixToolsMenu.Text = "Repair Mix..";
+            this.RepairMixToolsMenu.Click += new System.EventHandler(this.OnRepairMixToolsMenuClick);
             //
             // RemoteMixesToolsMenu
             //
@@ -461,7 +475,7 @@
             //
             // ImportContextMenu
             //
-            this.ImportContextMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ImportVoxMenu, this.ImportKshMenu, this.ImportKsmDevMenu, this.MenuSeparator8, this.BulkImportKshMenu });
+            this.ImportContextMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ImportVoxMenu, this.ImportKshMenu, this.ImportKsmDevMenu, this.MenuSeparator8, this.BulkImportKshMenu, this.ImportAsphyxiaMenu });
             //
             // ImportVoxMenu
             //
@@ -491,6 +505,12 @@
             this.BulkImportKshMenu.Index = 4;
             this.BulkImportKshMenu.Text = "Bulk Import Ksh..";
             this.BulkImportKshMenu.Click += new System.EventHandler(this.OnBulkImportKshMenuClick);
+            //
+            // ImportAsphyxiaMenu
+            //
+            this.ImportAsphyxiaMenu.Index = 5;
+            this.ImportAsphyxiaMenu.Text = "Import from Asphyxia list..";
+            this.ImportAsphyxiaMenu.Click += new System.EventHandler(this.OnImportAsphyxiaMenuClick);
             //
             // RemoveButton
             //
@@ -1156,10 +1176,13 @@
         private System.Windows.Forms.MenuItem MenuSeparator6;
         private System.Windows.Forms.MenuItem AutosaveEditMenu;
         private System.Windows.Forms.MenuItem BulkImportKshEditMenu;
+        private System.Windows.Forms.MenuItem ImportAsphyxiaEditMenu;
         private System.Windows.Forms.MenuItem MenuSeparator7;
         private System.Windows.Forms.MenuItem MenuSeparator8;
         private System.Windows.Forms.MenuItem BulkImportKshMenu;
+        private System.Windows.Forms.MenuItem ImportAsphyxiaMenu;
         private System.Windows.Forms.MenuItem ToolsSeparator1;
+        private System.Windows.Forms.MenuItem RepairMixToolsMenu;
         private System.Windows.Forms.MenuItem RemoteMixesToolsMenu;
     }
 }

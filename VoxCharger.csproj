@@ -207,6 +207,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Sources\AssetManager.cs" />
+    <Compile Include="Sources\AsphyxiaList.cs" />
+    <Compile Include="Sources\AsphyxiaImporter.cs" />
     <Compile Include="Sources\IconLoader.cs" />
     <Compile Include="Sources\MixUrlStore.cs" />
     <Compile Include="Sources\MixManifest.cs" />
@@ -290,6 +292,12 @@
     <Compile Include="Sources\Vox\VoxLevelHeader.cs" />
     <Compile Include="Sources\Vox\RadarCalculator.cs" />
     <Compile Include="Sources\Vox\RadarCalibrator.cs" />
+    <Compile Include="Sources\Repair\Manifest.cs" />
+    <Compile Include="Sources\Repair\ManifestRecorder.cs" />
+    <Compile Include="Sources\Repair\MixRepairer.cs" />
+    <Compile Include="Sources\Forms\RepairForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Sources\Forms\AboutForm.cs">
       <SubType>Form</SubType>
     </Compile>
