@@ -58,7 +58,7 @@ namespace VoxCharger
 
                     return;
                 }
-                else if (AssetManager.GetMixes().Contains(NameTextBox.Text) || NameTextBox.Text.ToLower() == "original")
+                else if (AssetManager.GetMixes().Contains(NameTextBox.Text, StringComparer.OrdinalIgnoreCase) || NameTextBox.Text.ToLower() == "original")
                 {
                     MessageBox.Show(
                         "Mix name is already exists",
@@ -69,13 +69,28 @@ namespace VoxCharger
 
                     return;
                 }
-
-                AssetManager.CreateMix(NameTextBox.Text);
             }
-            else if (MixSelectorDropDown.SelectedIndex == 1)
-                AssetManager.LoadMix(string.Empty);
-            else
-                AssetManager.LoadMix(MixSelectorDropDown.SelectedItem.ToString());
+
+            try
+            {
+                if (MixSelectorDropDown.SelectedIndex == 0)
+                    AssetManager.CreateMix(NameTextBox.Text);
+                else if (MixSelectorDropDown.SelectedIndex == 1)
+                    AssetManager.LoadMix(string.Empty);
+                else
+                    AssetManager.LoadMix(MixSelectorDropDown.SelectedItem.ToString());
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    ex.Message,
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+
+                return;
+            }
 
             DialogResult = DialogResult.OK;
             Close();

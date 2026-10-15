@@ -237,6 +237,88 @@ namespace VoxCharger
             }
         }
 
+        private void OnMixTagFileMenuClick(object sender, EventArgs e)
+        {
+            using (var prompt = new InputForm("Mix Tag", "Tag ID for all songs in this mix (0 = no tag):", AssetManager.MixTagId.ToString()))
+            {
+                if (prompt.ShowDialog() != DialogResult.OK)
+                    return;
+
+                if (!int.TryParse(prompt.Value, out int tagId) || tagId < 0)
+                {
+                    MessageBox.Show(
+                        "Tag ID must be a non-negative number",
+                        "Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
+
+                    return;
+                }
+
+                if (tagId == AssetManager.MixTagId)
+                    return;
+
+                AssetManager.SetMixTagId(tagId);
+                _pristine = false;
+            }
+        }
+
+        private void OnMixStartIdFileMenuClick(object sender, EventArgs e)
+        {
+            using (var prompt = new InputForm("Starting ID", "Lowest music ID for songs in this mix (0 = no limit):", AssetManager.MixStartId.ToString()))
+            {
+                if (prompt.ShowDialog() != DialogResult.OK)
+                    return;
+
+                if (!int.TryParse(prompt.Value, out int startId) || startId < 0)
+                {
+                    MessageBox.Show(
+                        "Starting ID must be a non-negative number",
+                        "Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
+
+                    return;
+                }
+
+                if (startId == AssetManager.MixStartId)
+                    return;
+
+                int below = startId > 0 ? AssetManager.Headers.Count(h => h.Id < startId) : 0;
+                if (below > 0)
+                {
+                    var response = MessageBox.Show(
+                        $"{below} song(s) in this mix have an ID below {startId} and will be moved to the next free IDs from {startId} on.\n\n" +
+                        "Their files are renamed when you save the mix. Continue?",
+                        "Starting ID",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question
+                    );
+
+                    if (response != DialogResult.Yes)
+                        return;
+                }
+
+                foreach (var action in AssetManager.SetMixStartId(startId))
+                    QueueAction("Renumber", action);
+
+                _pristine = false;
+                ApplyCurrentSort();
+                if (MusicListBox.SelectedItem is VoxHeader header)
+                    IdTextBox.Text = header.Id.ToString();
+            }
+        }
+
+        private void QueueAction(string key, Action action)
+        {
+            if (!_actions.ContainsKey(key))
+                _actions[key] = new Queue<Action>();
+
+            _actions[key].Enqueue(action);
+        }
+
         private void OnDeleteMixFileMenuClick(object sender, EventArgs e)
         {
             var prompt = MessageBox.Show(
@@ -1516,30 +1598,27 @@ namespace VoxCharger
             if (int.TryParse(IdTextBox.Text, out int id))
             {
                 // Validate ID
-                if (!AssetManager.ValidateMusicId(id))
+                if (id == header.Id)
+                {
+                }
+                else if (!AssetManager.ValidateMusicId(id) || AssetManager.Headers.Contains(id))
                 {
                     IdTextBox.Text = header.Id.ToString();
                     MessageBox.Show("Music ID is already taken", "Duplicate", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
-                else if (id != header.Id)
+                else if (id < AssetManager.MixStartId)
                 {
-                    // Rename asset folder if it exists
-                    string oldPath = AssetManager.GetMusicPath(header);
-                    int oldId = header.Id;
-                    header.Id = id;
-                    // Keep the sidecar URL keyed to the new id so reconvert
-                    // and export still find it after the rename.
-                    MixUrlStore.RenameUrl(AssetManager.MixPath, oldId, id);
-                    string newPath = AssetManager.GetMusicPath(header);
-
-                    if (Directory.Exists(oldPath) && !Directory.Exists(newPath))
-                    {
-                        if (!_actions.ContainsKey(header.Ascii))
-                            _actions[header.Ascii] = new Queue<Action>();
-
-                        _actions[header.Ascii].Enqueue(() => Directory.Move(oldPath, newPath));
-                        _pristine = false;
-                    }
+                    IdTextBox.Text = header.Id.ToString();
+                    MessageBox.Show($"Music ID must be at least {AssetManager.MixStartId}, the starting ID of this mix", "Starting ID", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    // Folder, files, thumbnails, URL sidecar and manifest follow the new id on save
+                    int oldId    = header.Id;
+                    string ascii = header.Ascii;
+                    AssetManager.Headers.ChangeId(header, id);
+                    QueueAction("Renumber", () => AssetManager.RenameMusicAssets(oldId, id, ascii));
+                    _pristine = false;
                 }
             }
             else
@@ -1839,6 +1918,9 @@ namespace VoxCharger
                     dialog.SetProgress(100f);
 
                     AssetManager.Headers.Save(dbFilename);
+                    if (dbFilename == AssetManager.MdbFilename)
+                        AssetManager.SaveMixSettings();
+
                     dialog.Complete();
                 });
 
@@ -1989,6 +2071,8 @@ namespace VoxCharger
             DeleteMixFileMenu.Enabled = state && safe;
             ExportMixFileMenu.Enabled = state && safe;
             ImportMixFileMenu.Enabled = state && safe;
+            MixTagFileMenu.Enabled    = state && safe;
+            MixStartIdFileMenu.Enabled = state && safe;
             AddButton.Enabled         = state && safe;
             AddEditMenu.Enabled       = state && safe;
             RemoveButton.Enabled      = state && safe;

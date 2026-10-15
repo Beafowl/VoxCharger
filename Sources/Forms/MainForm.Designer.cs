@@ -42,6 +42,8 @@
             this.DeleteMixFileMenu = new System.Windows.Forms.MenuItem();
             this.ExportMixFileMenu = new System.Windows.Forms.MenuItem();
             this.ImportMixFileMenu = new System.Windows.Forms.MenuItem();
+            this.MixTagFileMenu = new System.Windows.Forms.MenuItem();
+            this.MixStartIdFileMenu = new System.Windows.Forms.MenuItem();
             this.MenuSeparator3 = new System.Windows.Forms.MenuItem();
             this.ExitFileMenu = new System.Windows.Forms.MenuItem();
             this.EditMenu = new System.Windows.Forms.MenuItem();
@@ -153,7 +155,7 @@
             // FileMenu
             // 
             this.FileMenu.Index = 0;
-            this.FileMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.NewFileMenu, this.OpenFileMenu, this.MenuSeparator1, this.SaveFileMenu, this.SaveAsFileMenu, this.MenuSeparator2, this.ChangeMixFileMenu, this.DeleteMixFileMenu, this.ExportMixFileMenu, this.ImportMixFileMenu, this.MenuSeparator3, this.ExitFileMenu });
+            this.FileMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.NewFileMenu, this.OpenFileMenu, this.MenuSeparator1, this.SaveFileMenu, this.SaveAsFileMenu, this.MenuSeparator2, this.ChangeMixFileMenu, this.DeleteMixFileMenu, this.ExportMixFileMenu, this.ImportMixFileMenu, this.MixTagFileMenu, this.MixStartIdFileMenu, this.MenuSeparator3, this.ExitFileMenu });
             this.FileMenu.Text = "File";
             // 
             // NewFileMenu
@@ -224,14 +226,28 @@
             this.ImportMixFileMenu.Text = "Import Mix..";
             this.ImportMixFileMenu.Click += new System.EventHandler(this.OnImportMixFileMenuClick);
             //
+            // MixTagFileMenu
+            //
+            this.MixTagFileMenu.Enabled = false;
+            this.MixTagFileMenu.Index = 10;
+            this.MixTagFileMenu.Text = "Set Mix Tag..";
+            this.MixTagFileMenu.Click += new System.EventHandler(this.OnMixTagFileMenuClick);
+            //
+            // MixStartIdFileMenu
+            //
+            this.MixStartIdFileMenu.Enabled = false;
+            this.MixStartIdFileMenu.Index = 11;
+            this.MixStartIdFileMenu.Text = "Set Starting ID..";
+            this.MixStartIdFileMenu.Click += new System.EventHandler(this.OnMixStartIdFileMenuClick);
+            //
             // MenuSeparator3
             //
-            this.MenuSeparator3.Index = 10;
+            this.MenuSeparator3.Index = 12;
             this.MenuSeparator3.Text = "-";
             //
             // ExitFileMenu
             //
-            this.ExitFileMenu.Index = 11;
+            this.ExitFileMenu.Index = 13;
             this.ExitFileMenu.Shortcut = System.Windows.Forms.Shortcut.AltF4;
             this.ExitFileMenu.Text = "Exit";
             this.ExitFileMenu.Click += new System.EventHandler(this.OnExitFileMenuClick);
@@ -1134,6 +1150,8 @@
         private System.Windows.Forms.MenuItem DeleteMixFileMenu;
         private System.Windows.Forms.MenuItem ExportMixFileMenu;
         private System.Windows.Forms.MenuItem ImportMixFileMenu;
+        private System.Windows.Forms.MenuItem MixTagFileMenu;
+        private System.Windows.Forms.MenuItem MixStartIdFileMenu;
         private System.Windows.Forms.DateTimePicker DistributionPicker;
         private System.Windows.Forms.Label ReleaseLabel;
         private System.Windows.Forms.MenuItem SaveFileMenu;

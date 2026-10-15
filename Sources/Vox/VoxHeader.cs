@@ -19,6 +19,7 @@ namespace VoxCharger
         public int GenreId                { get; set; }
         public GameVersion Version        { get; set; } = GameVersion.ExceedGear;
         public InfiniteVersion InfVersion { get; set; } = InfiniteVersion.Mxm;
+        public int TagId                  { get; set; } // 0 = no tag
         public Dictionary<Difficulty, VoxLevelHeader> Levels { get; set; }
 
         public string CodeName => $"{Id:D4}_{Ascii}";

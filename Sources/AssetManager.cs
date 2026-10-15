@@ -4,7 +4,10 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
 using System.Text;
+using System.Web.Script.Serialization;
 
 namespace VoxCharger
 {
@@ -105,6 +108,15 @@ namespace VoxCharger
         public static MusicDb Headers { get; private set; } = new MusicDb();
 
         public static string MdbFilename { get; private set; }
+
+        // Tag applied to every song in the mix, 0 = none. Persisted in <mix>/voxcharger_mix.json
+        public static int MixTagId { get; private set; }
+
+        // Lowest music id songs in the mix may use, 0 = none. Persisted in <mix>/voxcharger_mix.json
+        public static int MixStartId { get; private set; }
+
+        private const string MixSettingsFileName = "voxcharger_mix.json";
+        private const int TutorialMusicId = 9001;
         #endregion
 
         #region --- Mix Management ---
@@ -145,24 +157,27 @@ namespace VoxCharger
         public static void CreateMix(string mixName)
         {
             string mixPath = Path.Combine(GamePath, @"data_mods\", mixName);
-            if (Directory.Exists(mixPath))
-                throw new IOException("Mix directory is already exists");
+            if (Directory.Exists(mixPath) && !IsMixSkeleton(mixPath))
+                throw new IOException($"A folder named \"{mixName}\" already exists in data_mods");
+
+            // Load Existing song DB to avoid duplicate id
+            // Done before touching the disk so an unreadable db elsewhere doesn't leave a half-created mix behind
+            LoadInternalDb(mixName);
 
             // Create necessary directory
             Directory.CreateDirectory(Path.Combine(mixPath, @"graphics\s_jacket00_ifs\"));
             Directory.CreateDirectory(Path.Combine(mixPath, @"music\"));
             Directory.CreateDirectory(Path.Combine(mixPath, @"others\"));
 
-            // Load Existing song DB to avoid duplicate id
-            LoadInternalDb(mixName);
-
             // Create empty db
             MdbFilename = Path.Combine(mixPath, @"others\music_db.merged.xml");
             File.WriteAllText(MdbFilename, "<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><mdb></mdb>");
             Headers.Clear();
-            
+
             MixName = mixName;
             MixPath = mixPath;
+            MixTagId = Headers.ForcedTagId = 0;
+            MixStartId = 0;
         }
 
         public static void LoadMix(string mixName)
@@ -180,14 +195,101 @@ namespace VoxCharger
             // Locate the music db, if unavailable, create it
             MdbFilename = Path.Combine(mixPath, @"others\", string.IsNullOrEmpty(mixName) ? "music_db.xml" : "music_db.merged.xml");
             Headers.Load(MdbFilename);
-            
+
             MixName = mixName;
             MixPath = mixPath;
+
+            // The original game data never gets mix settings
+            var settings = string.IsNullOrEmpty(mixName) ? null : LoadMixSettings(mixPath);
+            MixTagId   = Headers.ForcedTagId = GetSetting(settings, "tag");
+            MixStartId = GetSetting(settings, "startId");
+        }
+
+        // Moves every song below startId to the first free ids at or above it.
+        // Ids change in memory right away; the returned actions rename the assets on disk
+        // and must run before the db is saved.
+        public static List<Action> SetMixStartId(int startId)
+        {
+            MixStartId = startId;
+
+            var actions = new List<Action>();
+            if (startId <= 0)
+                return actions;
+
+            foreach (var header in Headers.Where(h => h.Id < startId).OrderBy(h => h.Id).ToList())
+            {
+                int oldId    = header.Id;
+                int newId    = GetFreeMusicId(startId);
+                string ascii = header.Ascii;
+
+                Headers.ChangeId(header, newId);
+                actions.Add(() => RenameMusicAssets(oldId, newId, ascii));
+            }
+
+            return actions;
+        }
+
+        public static void SetMixTagId(int tagId)
+        {
+            // Songs that only carry the tag because of the previous mix tag lose it when the mix tag is removed
+            foreach (var header in Headers)
+            {
+                if (tagId > 0)
+                    header.TagId = tagId;
+                else if (header.TagId == MixTagId)
+                    header.TagId = 0;
+            }
+
+            MixTagId = Headers.ForcedTagId = tagId;
+        }
+
+        public static void SaveMixSettings()
+        {
+            if (string.IsNullOrEmpty(MixName) || !Directory.Exists(MixPath))
+                return;
+
+            var settings = new Dictionary<string, object> { { "tag", MixTagId }, { "startId", MixStartId } };
+            File.WriteAllText(Path.Combine(MixPath, MixSettingsFileName), new JavaScriptSerializer().Serialize(settings), Encoding.UTF8);
+        }
+
+        private static Dictionary<string, object> LoadMixSettings(string mixPath)
+        {
+            string path = Path.Combine(mixPath, MixSettingsFileName);
+            if (!File.Exists(path))
+                return null;
+
+            try
+            {
+                return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(path, Encoding.UTF8));
+            }
+            catch
+            {
+                // Malformed settings shouldn't block opening the mix
+                return null;
+            }
+        }
+
+        private static int GetSetting(Dictionary<string, object> settings, string key)
+        {
+            if (settings != null && settings.TryGetValue(key, out object value) && value is int number && number > 0)
+                return number;
+
+            return 0;
         }
 
         public static string[] GetMixes()
         {
             return _mixList.ToArray();
+        }
+
+        // Directory left behind by an interrupted CreateMix: no music db and no files at all,
+        // only (possibly) the empty folder skeleton. Safe to reuse for a new mix.
+        private static bool IsMixSkeleton(string mixPath)
+        {
+            if (File.Exists(Path.Combine(mixPath, @"others\music_db.merged.xml")))
+                return false;
+
+            return Directory.GetFiles(mixPath, "*", SearchOption.AllDirectories).Length == 0;
         }
 
         private static void LoadInternalDb(string mixName)
@@ -369,8 +471,14 @@ namespace VoxCharger
             // This could be waste to those gaps, and eat up our precious limited id
             // However, these gaps may indicate deleted song, which should be taken by omnimix
 
-            int id = _internalHeaders.LastId + 1;
-            while (_internalHeaders.Contains(id) || Headers.Contains(id)) // Contains is O(1) so its should be fine
+            return GetFreeMusicId(Math.Max(_internalHeaders.LastId + 1, MixStartId));
+        }
+
+        // First id at or above `from` that no other mix, the game or this mix uses
+        public static int GetFreeMusicId(int from)
+        {
+            int id = from;
+            while (!ValidateMusicId(id) || Headers.Contains(id)) // Contains is O(1) so its should be fine
                 id++;
 
             return id;
@@ -378,7 +486,74 @@ namespace VoxCharger
 
         public static bool ValidateMusicId(int id)
         {
-            return !_internalHeaders.Contains(id);
+            return !_internalHeaders.Contains(id) && id != TutorialMusicId;
+        }
+
+        // Renames a song's assets after its id changed: the music folder and the files in it
+        // (named after the code name and jk_<id>), the jacket thumbnails, the URL sidecar and the manifest.
+        public static void RenameMusicAssets(int oldId, int newId, string ascii)
+        {
+            if (oldId == newId)
+                return;
+
+            string oldCode   = $"{oldId:D4}_{ascii}";
+            string newCode   = $"{newId:D4}_{ascii}";
+            string oldJacket = $"jk_{oldId:D4}_";
+            string newJacket = $"jk_{newId:D4}_";
+
+            Func<string, string> rename = name =>
+            {
+                if (name.StartsWith(oldCode, StringComparison.OrdinalIgnoreCase))
+                    return newCode + name.Substring(oldCode.Length);
+                if (name.StartsWith(oldJacket, StringComparison.OrdinalIgnoreCase))
+                    return newJacket + name.Substring(oldJacket.Length);
+
+                return name;
+            };
+
+            string oldDir = Path.Combine(MixPath, "music", oldCode);
+            string newDir = Path.Combine(MixPath, "music", newCode);
+            if (Directory.Exists(oldDir))
+            {
+                if (Directory.Exists(newDir))
+                    throw new IOException($"Cannot move music {oldId} to {newId}, {newDir} already exists");
+
+                Directory.Move(oldDir, newDir);
+                foreach (string file in Directory.GetFiles(newDir))
+                {
+                    string name = Path.GetFileName(file);
+                    string renamed = rename(name);
+                    if (renamed != name)
+                        File.Move(file, Path.Combine(newDir, renamed));
+                }
+            }
+
+            string graphicsDir = Path.Combine(MixPath, "graphics");
+            if (Directory.Exists(graphicsDir))
+            {
+                foreach (string dir in Directory.GetDirectories(graphicsDir, "s_jacket*_ifs"))
+                {
+                    foreach (string file in Directory.GetFiles(dir, $"{oldJacket}*"))
+                        File.Move(file, Path.Combine(dir, rename(Path.GetFileName(file))));
+                }
+            }
+
+            MixUrlStore.RenameUrl(MixPath, oldId, newId);
+
+            var manifest = Manifest.Load(MixPath);
+            if (manifest.TryGet(oldId, out var entry))
+            {
+                manifest.Charts.Remove(oldId.ToString(CultureInfo.InvariantCulture));
+                entry.Id       = newId;
+                entry.CodeName = newCode;
+                entry.Outputs  = entry.Outputs.ToDictionary(
+                    output => output.Key.Replace(oldCode, newCode).Replace(oldJacket, newJacket),
+                    output => output.Value
+                );
+
+                manifest.Charts[newId.ToString(CultureInfo.InvariantCulture)] = entry;
+                manifest.Save(MixPath);
+            }
         }
 
         public static string GetDifficultyCodes(VoxHeader header, Difficulty difficulty)

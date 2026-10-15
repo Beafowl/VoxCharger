@@ -160,6 +160,18 @@ namespace VoxCharger
                         if (chart.Header.Jacket != null)
                             AssetManager.ImportJacket(header, chart.Header.Difficulty, chart.Header.Jacket);
                     }
+
+                    // Manifest update: hash every source we read (per-difficulty
+                    // KSH, original audio, jacket) and every output we wrote, so
+                    // MixRepairer can later detect sync corruption / source drift.
+                    try
+                    {
+                        ManifestRecorder.RecordExport(header, charts, importOptions);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"manifest update failed for {header.CodeName}: {ex.Message}");
+                    }
                 };
             }
 

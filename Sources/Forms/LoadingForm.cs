@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace VoxCharger
@@ -19,7 +20,27 @@ namespace VoxCharger
 
         private void OnLoadingFormShown(object sender, EventArgs e)
         {
-            this._action(this);
+            // Run the action on a background thread so the dialog's message
+            // pump stays responsive for SetStatus/SetProgress callbacks. The
+            // asphyxia importer uses Task.WaitAll / Parallel.ForEach internally;
+            // running it on the UI thread would deadlock as soon as a worker
+            // tried to Invoke back to update the progress bar.
+            Task.Run(() =>
+            {
+                try
+                {
+                    _action(this);
+                }
+                catch
+                {
+                    // Action implementations are expected to handle their own
+                    // failures and call Complete() in a finally. The catch
+                    // here is a backstop — without it, an unhandled exception
+                    // would leave the dialog open forever.
+                    Complete();
+                    throw;
+                }
+            });
         }
 
         public void SetAction(Action<LoadingForm> action)

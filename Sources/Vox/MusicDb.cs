@@ -21,6 +21,9 @@ namespace VoxCharger
 
         public int LastId => _headers.Values.Max(h => h.Id);
 
+        // When > 0, every song is written with this tag regardless of its own TagId (mix-wide tag)
+        public int ForcedTagId { get; set; }
+
         public MusicDb()
         {
             _headers = new Dictionary<int, VoxHeader>();
@@ -58,6 +61,10 @@ namespace VoxCharger
                     Version          = (GameVersion)int.Parse(info.SelectSingleNode("version").InnerText),
                     InfVersion       = (InfiniteVersion)int.Parse(info.SelectSingleNode("inf_ver").InnerText),
                 };
+
+                var tag = music.SelectSingleNode("tag");
+                if (tag?.Attributes["id"] != null && int.TryParse(tag.Attributes["id"].Value, out int tagId))
+                    header.TagId = tagId;
 
                 // For some reason, konmai decide to use int32 with thousands value for the BPM, e.g 18000 to represent 180.00 BPM
                 // Why? I don't know, probably the usual fuckery
@@ -107,12 +114,12 @@ namespace VoxCharger
                         var radar = diffInfo.SelectSingleNode("radar");
                         lvHeader.Radar = new VoxLevelRadar()
                         {
-                            Notes    = byte.Parse(radar.SelectSingleNode("notes").InnerText),
-                            Peak     = byte.Parse(radar.SelectSingleNode("peak").InnerText),
-                            Lasers   = byte.Parse(radar.SelectSingleNode("tsumami").InnerText),
-                            Tricky   = byte.Parse(radar.SelectSingleNode("tricky").InnerText),
-                            HandTrip = byte.Parse(radar.SelectSingleNode("hand-trip").InnerText),
-                            OneHand  = byte.Parse(radar.SelectSingleNode("one-hand").InnerText),
+                            Notes    = ParseRadar(radar.SelectSingleNode("notes").InnerText),
+                            Peak     = ParseRadar(radar.SelectSingleNode("peak").InnerText),
+                            Lasers   = ParseRadar(radar.SelectSingleNode("tsumami").InnerText),
+                            Tricky   = ParseRadar(radar.SelectSingleNode("tricky").InnerText),
+                            HandTrip = ParseRadar(radar.SelectSingleNode("hand-trip").InnerText),
+                            OneHand  = ParseRadar(radar.SelectSingleNode("one-hand").InnerText),
                         };
 
 
@@ -126,6 +133,14 @@ namespace VoxCharger
 
                 Add(header);
             }
+        }
+
+        // Newer datecodes store radar values as u16 and a few stock charts exceed 255 (e.g. peak 293)
+        // Clamp instead of failing the whole db load, radar is display-only on our side
+        private static byte ParseRadar(string value)
+        {
+            int radar = int.Parse(value);
+            return (byte)Math.Max(byte.MinValue, Math.Min(byte.MaxValue, radar));
         }
 
         public void Save(string filename)
@@ -215,6 +230,14 @@ namespace VoxCharger
                 music.AppendChild(info);
                 music.AppendChild(diffInfo);
 
+                int tagId = ForcedTagId > 0 ? ForcedTagId : header.TagId;
+                if (tagId > 0)
+                {
+                    var tag = doc.CreateElement("tag");
+                    tag.SetAttribute("id", tagId.ToString());
+                    music.AppendChild(tag);
+                }
+
                 master.AppendChild(music);
             }
 
@@ -233,6 +256,14 @@ namespace VoxCharger
                 _max = header.Id;
 
             _headers[header.Id] = header;
+        }
+
+        // Songs are keyed by id, so changing VoxHeader.Id directly would leave the entry under the old key
+        public void ChangeId(VoxHeader header, int id)
+        {
+            _headers.Remove(header.Id);
+            header.Id = id;
+            Add(header);
         }
 
         public void Remove(int id)

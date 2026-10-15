@@ -7,11 +7,12 @@ namespace VoxCharger
     {
         public string Value => InputTextBox.Text.Trim();
 
-        public InputForm(string title, string prompt)
+        public InputForm(string title, string prompt, string value = "")
         {
             InitializeComponent();
             Text = title;
             PromptLabel.Text = prompt;
+            InputTextBox.Text = value;
         }
 
         private void OnOkButtonClick(object sender, EventArgs e)
