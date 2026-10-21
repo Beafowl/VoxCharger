@@ -1,111 +1,191 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 
 namespace VoxCharger
 {
-    // Radar axes are computed as a linear combination of chart features, with
-    // coefficients fitted against ~8.3k official Konami charts. To re-fit, use
-    // the `--calibrate-radar` CLI (see RadarCalibrator) and paste the printed
-    // weight arrays below.
+    // Radar axes are linear combinations of chart features, fitted against the official
+    // radar values of the stock charts (~8.6k charts). `--calibrate-radar` extracts the
+    // feature CSV (see RadarCalibrator) and reports how the weights below perform; the
+    // fit itself is done offline on that CSV (held-out split: id % 5 == 0) and the
+    // resulting weights are pasted into the *Weights tables.
+    //
+    // Features are computed from a normalized view of the chart (see Normalize) so that
+    // KSH-parsed and VOX-parsed charts yield identical values: the VOX parser wraps slam
+    // end points in Event.Slam, the KSH parser keeps them as two Laser events. Time is
+    // measured in ticks of 1/48 quarter note and in seconds (via the BPM events), both
+    // independent of the time signature.
     public static class RadarCalculator
     {
-        // Konami radar values are bytes, but in practice official charts top out around ~200.
-        private const byte MaxRadar = 200;
+        private const int MaxRadar = 255;
+        private const int TicksPerMeasure = 192; // one whole note, a 4/4 measure
+        private const int TicksPerBeat    = 48;
 
-        public static readonly string[] FeatureNames =
+        // Count-type features, each emitted per measure (_pm, whole-note units) and per second (_ps)
+        private static readonly string[] RateFeatures =
         {
-            "intercept",
-            "chips_per_measure",
-            "holds_per_measure",
-            "hold_duration_ratio",
-            "laser_segments_per_measure",
-            "slams_per_measure",
-            "laser_active_ratio",
-            "both_lasers_active_ratio",
-            "button_during_laser_per_measure",
-            "simultaneous_lr_per_measure",
-            "peak_density_1m",
-            "peak_density_2m",
-            "peak_density_4m",
-            "peak_density_8m",
-            "bpm_change_count",
-            "bpm_range_fraction",
-            "stop_count_per_measure",
-            "tilt_changes_per_measure",
-            "level_difnum",
+            "chips", "holds", "objects",
+            "laser_segments", "laser_points", "slams", "laser_move", "laser_dir_changes", "laser_side_switches",
+            "chords2", "chords3", "jack16", "jack8", "jack_runs", "offgrid", "triplets",
+            "buttons_during_laser", "one_hand", "hand_trip", "one_hand_chords", "one_hand_holds", "both_knob_buttons",
+            "bpm_changes", "stops", "cam_rot", "cam_rad", "cam_tilt", "tilt_modes", "lane_clears",
         };
 
-        // Notes and Peak use DIRECT formulas instead of multivariate regression.
-        //   Notes = NotesScale * (chips + holds + laser_segments + slams) / measures
-        //   Peak  = PeakScale  * peak_density_4m
-        // The regression for these two axes fit well in R² but produced
-        // incoherent weights (negative holds_per_measure for Notes, and Peak
-        // explained more by level_difnum than by peak_density features).
-        // Direct formulas match the conceptual definitions from voltexes.com
-        // and keep each axis tied to the one feature it's supposed to measure.
-        // Fit via `VoxCharger.exe --calibrate-radar <game_data_dir>`; paste
-        // the reported `[direct formula] scale = ...` values here.
-        private const double NotesScale = 6.0;  // placeholder; run --calibrate-radar for a fitted value
-        private const double PeakScale  = 6.0;  // placeholder; run --calibrate-radar for a fitted value
+        private static readonly string[] PlainFeatures =
+        {
+            "total_measures", "span_measures", "total_sec", "span_sec", "span_ratio", "avg_bpm",
+            "hold_ratio", "laser_active_ratio", "laser_both_ratio", "laser_l_ratio", "laser_r_ratio", "stop_ratio",
+            "offgrid_frac", "one_hand_frac", "hand_trip_frac", "bpm_range_frac",
+            "cam_rot_mag_pm", "cam_rad_mag_pm", "cam_tilt_mag_pm",
+            "peak_obj_1m", "peak_obj_2m", "peak_obj_4m", "peak_obj_8m",
+            "peak_chip_1m", "peak_chip_2m", "peak_chip_4m",
+            "peak_obj_1s", "peak_obj_2s", "peak_obj_4s", "peak_chip_1s", "peak_chip_2s",
+            "level",
+        };
 
-        // Kept for reference / rollback: the original multivariate regression
-        // weights for Notes and Peak (fitted against music_db.xml, n=8280).
-        // To revert the direct formulas, restore these as `static readonly
-        // double[]` and call `Predict(features, ...)` from Calculate().
-        /*
-        private static readonly double[] NotesWeights = // R²=0.906, RMSE=11.07
-        {
-            -5.156511, 8.487934, -20.390941, 49.107870, -3.789350, -21.710287, -8.417644, -15.210130,
-             1.131977, 2.175205, 0.125313, 0.330022, -0.823263, 1.137743, 0.013049, 4.820540,
-           258.217045, -38.961670, 1.992591
-        };
-        private static readonly double[] PeakWeights = // R²=0.854, RMSE=13.14
-        {
-            -3.004106, 1.932366, -12.538507, 44.955565, -1.512857, -2.009590, -4.888202, 7.057453,
-            -0.050425, -7.433806, 0.889987, 1.104077, -0.345250, 1.682488, -0.018459, 4.303914,
-           118.692082, -37.132191, 2.703601
-        };
-        */
+        public static readonly string[] FeatureNames = BuildFeatureNames();
+        private static readonly Dictionary<string, int> FeatureIndex =
+            FeatureNames.Select((name, index) => new { name, index }).ToDictionary(x => x.name, x => x.index);
 
-        // Remaining axes still use multivariate regression — their definitions
-        // (speed changes, hand crossings, laser-while-button coverage) don't
-        // reduce to a single feature cleanly. Fitted against music_db.xml
-        // (n=8280). Order matches FeatureNames. R² reported per axis.
-        private static readonly double[] TsumamiWeights = // R²=0.473, RMSE=16.62
+        private static string[] BuildFeatureNames()
         {
-            19.885970, -9.333893, 9.272503, -44.446968, -10.165093, 18.128370, 61.677796, 89.507114,
-            -0.413305, 11.819119, 0.542611, 0.549946, 1.108836, 1.255030, -0.027717, -14.531069,
-          -445.694887, 6.782250, 2.472188
+            var names = new List<string>();
+            foreach (string rate in RateFeatures)
+            {
+                names.Add(rate + "_pm");
+                names.Add(rate + "_ps");
+            }
+            names.AddRange(PlainFeatures);
+            return names.ToArray();
+        }
+
+        // Weights per axis: "intercept" plus feature name -> coefficient, optionally with a
+        // transform prefix ("sqrt:", "log1p:"). Fitted with scripts/radar_fit.py on the CSV of
+        //   VoxCharger.exe --calibrate-radar <game>/data --csv features.csv
+        //   python radar_fit.py features.csv weights.txt --camera-only-tricky
+        // (forward stepwise selection by 5-fold CV, camera features only for TRICKY, no level).
+        // Held-out R² / RMSE against the official values, KFC-2026071400, 8648 charts:
+        //   notes 0.999 / 1.0   peak 0.924 / 9.7   tsumami 0.684 / 13.2
+        //   tricky 0.704 / 18.5 hand-trip 0.720 / 14.8   one-hand 0.860 / 15.0
+        // `--calibrate-radar` without --csv re-checks the compiled weights against the game.
+        private static readonly Dictionary<string, double> NotesWeights = new Dictionary<string, double>
+        {
+            { "intercept", -1.226433 },
+            { "chips_ps", 16.055857 },
+            { "log1p:hold_ratio", 19.445583 },
         };
-        private static readonly double[] TrickyWeights = // R²=0.549, RMSE=21.17
+
+        private static readonly Dictionary<string, double> PeakWeights = new Dictionary<string, double>
         {
-           -14.192832, -2.528549, 1.799152, 9.092520, 0.819348, 4.051176, -16.614304, 55.244232,
-             0.173178, 2.703967, 0.441194, 1.321132, 0.146902, -0.087734, 0.146782, 79.080910,
-           777.107443, -157.395441, 2.315149
+            { "intercept", -28.671986 },
+            { "sqrt:peak_obj_4s", 16.266137 },
+            { "chips_ps", 6.768679 },
+            { "sqrt:peak_chip_1s", 5.911350 },
+            { "log1p:hold_ratio", 32.391205 },
+            { "chords2_pm", -8.033407 },
+            { "peak_chip_1m", 0.776802 },
         };
-        private static readonly double[] HandTripWeights = // R²=0.560, RMSE=19.19
+
+        private static readonly Dictionary<string, double> TsumamiWeights = new Dictionary<string, double>
         {
-           -13.254981, -4.756649, -4.009566, 7.285322, -11.289355, -15.545705, 8.424176, -48.998835,
-            10.126539, 30.765193, 0.445748, 0.700719, -0.080343, 0.999042, -0.001430, -2.762574,
-           137.240376, -11.645617, 1.206068
+            { "intercept", 22.666837 },
+            { "laser_both_ratio", 25.105073 },
+            { "sqrt:peak_obj_1m", 3.981288 },
+            { "sqrt:chips_pm", -26.593027 },
+            { "sqrt:slams_ps", -21.005707 },
+            { "laser_dir_changes_ps", 9.607794 },
+            { "log1p:peak_obj_4m", 25.957157 },
+            { "laser_active_ratio", 211.656879 },
+            { "sqrt:laser_active_ratio", -107.664741 },
+            { "buttons_during_laser_pm", -4.056659 },
+            { "log1p:chords2_pm", 12.708087 },
+            { "hold_ratio", -16.547050 },
+            { "sqrt:jack8_pm", 13.402293 },
+            { "sqrt:chords3_pm", 15.422227 },
+            { "jack8_ps", -6.797805 },
         };
-        private static readonly double[] OneHandWeights = // R²=0.770, RMSE=19.15
+
+        private static readonly Dictionary<string, double> TrickyWeights = new Dictionary<string, double>
         {
-           -30.226156, -0.285671, 6.280906, 20.331417, -4.547709, -36.096944, -5.962500, -89.615086,
-            12.989854, 14.079866, 0.390225, 0.746504, -0.686032, 0.449103, 0.004726, -2.381292,
-            57.139071, -15.123112, 3.644141
+            { "intercept", -2.628276 },
+            { "sqrt:cam_rad_mag_pm", 135.159464 },
+            { "bpm_range_frac", 876.409488 },
+            { "peak_chip_2s", 2.386968 },
+            { "log1p:bpm_range_frac", -1283.027539 },
+            { "cam_rad_pm", -78.195360 },
+            { "log1p:jack16_ps", 59.871598 },
+            { "peak_chip_2m", -1.221299 },
+            { "sqrt:bpm_range_frac", 148.275717 },
+            { "log1p:cam_rad_ps", 81.712882 },
+        };
+
+        private static readonly Dictionary<string, double> HandTripWeights = new Dictionary<string, double>
+        {
+            { "intercept", -3.551402 },
+            { "chords2_ps", 26.604305 },
+            { "hand_trip_frac", 573.282597 },
+            { "sqrt:one_hand_ps", -10.100559 },
+            { "sqrt:chords3_ps", 30.896650 },
+            { "sqrt:hand_trip_frac", -82.677912 },
+            { "log1p:jack_runs_ps", 25.037492 },
+            { "holds_ps", 6.639840 },
+            { "sqrt:chords2_pm", -14.902717 },
+            { "peak_obj_1m", 0.520413 },
+        };
+
+        private static readonly Dictionary<string, double> OneHandWeights = new Dictionary<string, double>
+        {
+            { "intercept", -28.521229 },
+            { "objects_ps", 5.402829 },
+            { "holds_pm", 14.964991 },
+            { "log1p:chords2_ps", 26.044027 },
+            { "one_hand_frac", -81.731321 },
+            { "sqrt:one_hand_frac", 248.526902 },
+            { "sqrt:slams_pm", -11.459208 },
+            { "sqrt:hand_trip_pm", -27.172891 },
+            { "buttons_during_laser_ps", 34.504063 },
+            { "sqrt:peak_obj_2s", 8.469794 },
+            { "sqrt:buttons_during_laser_ps", -253.339179 },
+            { "log1p:buttons_during_laser_ps", 193.913066 },
         };
 
         public static VoxLevelRadar Calculate(EventCollection events, int level = 1)
         {
             var features = ExtractFeatures(events, level);
-            if (features == null)
-                return new VoxLevelRadar();
+            return features == null ? new VoxLevelRadar() : Calculate(features);
+        }
 
+        // Radar for a chart about to be written: computed from the chart as it reads back from
+        // the serialized VOX, so imported charts are measured exactly like the stock charts the
+        // weights were fitted on (the VOX parser normalizes a few things the KSH events don't:
+        // duplicate laser points, camera value precision, stop markers).
+        public static VoxLevelRadar Calculate(VoxChart chart, int level = 1)
+        {
+            string path = Path.GetTempFileName();
+            try
+            {
+                chart.Serialize(path);
+                var parsed = new VoxChart();
+                parsed.Parse(path);
+                return Calculate(parsed.Events, level);
+            }
+            catch (Exception)
+            {
+                return Calculate(chart.Events, level);
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { /* temp file, best effort */ }
+            }
+        }
+
+        public static VoxLevelRadar Calculate(double[] features)
+        {
             return new VoxLevelRadar
             {
-                Notes    = ClampByte(NotesScale * RawNotes(features)),
-                Peak     = ClampByte(PeakScale  * RawPeak(features)),
+                Notes    = Predict(features, NotesWeights),
+                Peak     = Predict(features, PeakWeights),
                 Lasers   = Predict(features, TsumamiWeights),
                 Tricky   = Predict(features, TrickyWeights),
                 HandTrip = Predict(features, HandTripWeights),
@@ -113,235 +193,499 @@ namespace VoxCharger
             };
         }
 
-        // Direct Notes signal: all "note-like" objects per measure.
-        //   chips_per_measure + holds_per_measure + laser_segments_per_measure + slams_per_measure
-        public static double RawNotes(double[] features)
-            => features[1] + features[2] + features[4] + features[5];
-
-        // Direct Peak signal: the busiest 4-measure window's average objects per measure.
-        public static double RawPeak(double[] features)
-            => features[12];
-
-        private static byte ClampByte(double v)
+        private static byte Predict(double[] features, Dictionary<string, double> weights)
         {
-            if (v <= 0) return 0;
-            if (v >= MaxRadar) return MaxRadar;
-            return (byte)v;
+            double sum = 0;
+            foreach (var kv in weights)
+                sum += kv.Key == "intercept" ? kv.Value : kv.Value * Term(features, kv.Key);
+
+            if (sum <= 0) return 0;
+            if (sum >= MaxRadar) return MaxRadar;
+            return (byte)Math.Round(sum);
         }
 
-        // Returns FeatureNames-aligned feature vector for the given chart, or null if the
-        // chart has no usable events. Public so RadarCalibrator can share this logic.
+        // A weight key is a feature name, optionally prefixed with a transform ("sqrt:chips_ps")
+        private static double Term(double[] features, string key)
+        {
+            int colon = key.IndexOf(':');
+            if (colon < 0)
+                return features[FeatureIndex[key]];
+
+            double value = features[FeatureIndex[key.Substring(colon + 1)]];
+            switch (key.Substring(0, colon))
+            {
+                case "sqrt":  return Math.Sqrt(Math.Max(0, value));
+                case "log1p": return Math.Log(1 + Math.Max(0, value));
+                default:      throw new ArgumentException($"Unknown radar feature transform in '{key}'");
+            }
+        }
+
+        #region --- Normalized chart view ---
+
+        private struct Note
+        {
+            public int Tick;
+            public int Hold;     // ticks, 0 = chip
+            public Event.ButtonTrack Track;
+        }
+
+        private struct LaserPoint
+        {
+            public Event.LaserTrack Track;
+            public int Tick;
+            public int Offset;   // 0..127
+            public Event.LaserFlag Flag;
+            public int Seq;      // order of appearance, keeps slam start before slam end
+        }
+
+        // Tick positions and seconds along the chart, honouring time signatures and BPM changes.
+        private class Timeline
+        {
+            private readonly List<(int measure, int beat, int note)> _signatures;
+            private readonly List<int> _starts = new List<int> { 0, 0 }; // _starts[m] = tick where measure m starts
+            private List<(int tick, double sec, double secPerTick)> _bpm = new List<(int, double, double)>();
+
+            public Timeline(IEnumerable<Event.TimeSignature> signatures)
+            {
+                _signatures = signatures
+                    .Select(s => (measure: Math.Max(1, s.Time.Measure), beat: Math.Max(1, s.Beat), note: Math.Max(1, s.Note)))
+                    .OrderBy(s => s.measure)
+                    .ToList();
+            }
+
+            private (int beat, int note) SignatureOf(int measure)
+            {
+                (int beat, int note) sig = (4, 4);
+                foreach (var s in _signatures)
+                {
+                    if (s.measure > measure) break;
+                    sig = (s.beat, s.note);
+                }
+                return sig;
+            }
+
+            public int Start(int measure)
+            {
+                while (_starts.Count <= measure)
+                {
+                    int last = _starts.Count - 1;
+                    var sig  = SignatureOf(last);
+                    _starts.Add(_starts[last] + (int)Math.Round(sig.beat * (double)TicksPerMeasure / sig.note));
+                }
+                return _starts[measure];
+            }
+
+            public int TickOf(Time t)
+            {
+                int measure = Math.Max(1, t.Measure);
+                var sig     = SignatureOf(measure);
+                return Start(measure) + (int)Math.Round(((t.Beat - 1) * TicksPerBeat + t.Offset) * 4.0 / sig.note);
+            }
+
+            public void SetBpms(IEnumerable<(int tick, float bpm)> bpms)
+            {
+                var list = bpms.Where(b => b.bpm > 0).OrderBy(b => b.tick).ToList();
+                if (list.Count == 0) list.Add((0, 120f));
+                if (list[0].tick > 0) list.Insert(0, (0, list[0].bpm));
+
+                _bpm = new List<(int, double, double)>();
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (i + 1 < list.Count && list[i + 1].tick == list[i].tick)
+                        continue; // last value at the same tick wins
+
+                    double sec = 0;
+                    if (_bpm.Count > 0)
+                    {
+                        var prev = _bpm[_bpm.Count - 1];
+                        sec = prev.sec + (list[i].tick - prev.tick) * prev.secPerTick;
+                    }
+                    _bpm.Add((list[i].tick, sec, 60.0 / (list[i].bpm * TicksPerBeat)));
+                }
+            }
+
+            public double SecondsAt(int tick)
+            {
+                var seg = _bpm[0];
+                for (int i = 1; i < _bpm.Count && _bpm[i].tick <= tick; i++)
+                    seg = _bpm[i];
+                return seg.sec + (tick - seg.tick) * seg.secPerTick;
+            }
+        }
+
+        private static bool IsLeftSide(Event.ButtonTrack track)
+        {
+            return track == Event.ButtonTrack.A || track == Event.ButtonTrack.B || track == Event.ButtonTrack.FxL;
+        }
+
+        #endregion
+
+        // Returns the FeatureNames-aligned feature vector, or null if the chart has no gameplay.
         public static double[] ExtractFeatures(EventCollection events, int level)
         {
             if (events == null || events.Count == 0)
                 return null;
 
+            var signatures = new List<Event.TimeSignature>();
+            var buttons    = new List<Event.Button>();
+            var lasers     = new List<Event.Laser>();
+            var slams      = new List<Event.Slam>();
+            var bpms       = new List<Event.Bpm>();
+            var stops      = new List<Event.Stop>();
+            var cameras    = new List<Camera>();
+            int tiltModes  = 0;
             int maxMeasure = 1;
+
             foreach (var ev in events)
-                if (ev.Time.Measure > maxMeasure) maxMeasure = ev.Time.Measure;
-            if (maxMeasure <= 1)
+            {
+                if (ev.Time != null && ev.Time.Measure > maxMeasure)
+                    maxMeasure = ev.Time.Measure;
+
+                if (ev is Event.TimeSignature sig)   signatures.Add(sig);
+                else if (ev is Event.Button b)       buttons.Add(b);
+                else if (ev is Event.Laser l)        lasers.Add(l);
+                else if (ev is Event.Slam s)         slams.Add(s);
+                else if (ev is Event.Bpm bpm)        bpms.Add(bpm);
+                else if (ev is Event.Stop stop)      stops.Add(stop);
+                else if (ev is Event.TiltMode)       tiltModes++;
+                else if (ev is Camera cam)           cameras.Add(cam);
+            }
+
+            // VOX parser: the slam start stays a Laser event, the end only lives inside the Slam
+            var known = new HashSet<Event.Laser>(lasers);
+            foreach (var s in slams)
+            {
+                if (s.Start != null && known.Add(s.Start)) lasers.Add(s.Start);
+                if (s.End   != null && known.Add(s.End))   lasers.Add(s.End);
+            }
+
+            var tl = new Timeline(signatures);
+
+            var notes = new List<Note>(buttons.Count);
+            foreach (var b in buttons)
+                notes.Add(new Note { Tick = tl.TickOf(b.Time), Hold = Math.Max(0, b.HoldLength), Track = b.Track });
+
+            var points = new List<LaserPoint>(lasers.Count);
+            for (int i = 0; i < lasers.Count; i++)
+            {
+                var l = lasers[i];
+                points.Add(new LaserPoint { Track = l.Track, Tick = tl.TickOf(l.Time), Offset = l.Offset, Flag = l.Flag, Seq = i });
+            }
+            points.Sort((a, b) => a.Track != b.Track ? a.Track.CompareTo(b.Track) : a.Tick != b.Tick ? a.Tick.CompareTo(b.Tick) : a.Seq.CompareTo(b.Seq));
+
+            if (notes.Count == 0 && points.Count == 0)
                 return null;
 
-            double measures = maxMeasure;
+            int firstTick = int.MaxValue, lastTick = 0;
+            foreach (var n in notes)  { firstTick = Math.Min(firstTick, n.Tick); lastTick = Math.Max(lastTick, n.Tick + n.Hold); }
+            foreach (var p in points) { firstTick = Math.Min(firstTick, p.Tick); lastTick = Math.Max(lastTick, p.Tick); }
 
-            var buttons = new List<Event.Button>();
-            var lasers  = new List<Event.Laser>();
-            var bpms    = new List<Event.Bpm>();
-            var stops   = new List<Event.Stop>();
-            int tiltCount = 0;
-            foreach (var ev in events)
-            {
-                if (ev is Event.Button b)        buttons.Add(b);
-                else if (ev is Event.Laser l)    lasers.Add(l);
-                else if (ev is Event.Bpm bp)     bpms.Add(bp);
-                else if (ev is Event.Stop s)     stops.Add(s);
-                else if (ev is Event.TiltMode)   tiltCount++;
-            }
+            while (tl.Start(maxMeasure + 1) < lastTick)
+                maxMeasure++; // holds running past the last measure
 
+            int totalTicks = tl.Start(maxMeasure + 1);
+            tl.SetBpms(bpms.Select(b => (tl.TickOf(b.Time), b.Value)));
+
+            double spanTicks    = Math.Max(TicksPerBeat, lastTick - firstTick);
+            double spanMeasures = spanTicks / TicksPerMeasure;
+            double totalMeasures = totalTicks / (double)TicksPerMeasure;
+            double spanSec      = Math.Max(1.0, tl.SecondsAt(lastTick) - tl.SecondsAt(firstTick));
+            double totalSec     = Math.Max(1.0, tl.SecondsAt(totalTicks));
+
+            // --- buttons -----------------------------------------------------------------
             int chips = 0, holds = 0;
             double holdTicks = 0;
-            foreach (var b in buttons)
+            int offgrid = 0, triplets = 0;
+            var byTrack = new Dictionary<Event.ButtonTrack, List<int>>();
+            foreach (var n in notes)
             {
-                if (b.HoldLength > 0) { holds++; holdTicks += b.HoldLength; }
+                if (n.Hold > 0) { holds++; holdTicks += n.Hold; }
                 else chips++;
+
+                if (n.Tick % 12 != 0) offgrid++;
+                if (n.Tick % 16 == 0 && n.Tick % 12 != 0) triplets++;
+
+                if (!byTrack.TryGetValue(n.Track, out var ticks))
+                    byTrack[n.Track] = ticks = new List<int>();
+                ticks.Add(n.Tick);
             }
-            double chartTicks = measures * 192.0;
-            double holdRatio = chartTicks > 0 ? Math.Min(1.0, holdTicks / chartTicks) : 0;
 
-            int totalTicks = maxMeasure * 192;
-            var laserActiveL = BuildLaserActive(lasers, Event.LaserTrack.Left,  maxMeasure, out int lsegL);
-            var laserActiveR = BuildLaserActive(lasers, Event.LaserTrack.Right, maxMeasure, out int lsegR);
-            int laserSegments = lsegL + lsegR;
-            int slamCount = CountSlams(lasers);
-
-            int activeL = CountSet(laserActiveL);
-            int activeR = CountSet(laserActiveR);
-            int activeBoth = CountBoth(laserActiveL, laserActiveR);
-            double laserActiveRatio = totalTicks > 0 ? (double)(activeL + activeR - activeBoth) / totalTicks : 0;
-            double bothLaserRatio   = totalTicks > 0 ? (double)activeBoth / totalTicks : 0;
-
-            int buttonsDuringLaser = 0;
-            int simultaneousLr = 0;
-            var buttonsByTick = new Dictionary<int, List<Event.Button>>();
-            foreach (var b in buttons)
+            int jack16 = 0, jack8 = 0, jackRuns = 0;
+            foreach (var ticks in byTrack.Values)
             {
-                int tick = AbsTick(b.Time);
-                if (tick < 0 || tick >= totalTicks) continue;
-                if (laserActiveL[tick] || laserActiveR[tick]) buttonsDuringLaser++;
-
-                if (!buttonsByTick.TryGetValue(tick, out var lst))
-                    buttonsByTick[tick] = lst = new List<Event.Button>();
-                lst.Add(b);
-            }
-            foreach (var kv in buttonsByTick)
-            {
-                bool left = false, right = false;
-                foreach (var b in kv.Value)
+                ticks.Sort();
+                int run = 1;
+                for (int i = 1; i < ticks.Count; i++)
                 {
-                    if (b.Track == Event.ButtonTrack.A || b.Track == Event.ButtonTrack.B || b.Track == Event.ButtonTrack.FxL) left  = true;
-                    if (b.Track == Event.ButtonTrack.C || b.Track == Event.ButtonTrack.D || b.Track == Event.ButtonTrack.FxR) right = true;
+                    int gap = ticks[i] - ticks[i - 1];
+                    if (gap <= 0) continue;
+                    if (gap <= 12) jack16++;
+                    if (gap <= 24) { jack8++; run++; }
+                    else { if (run >= 3) jackRuns++; run = 1; }
                 }
-                if (left && right) simultaneousLr++;
+                if (run >= 3) jackRuns++;
             }
 
-            var perMeasure = new int[maxMeasure + 2];
-            foreach (var b in buttons)
+            // --- lasers ------------------------------------------------------------------
+            var activeL = new bool[totalTicks + 1];
+            var activeR = new bool[totalTicks + 1];
+            int segments = 0, slamCount = 0, dirChanges = 0;
+            double move = 0;
+            var segmentStarts = new List<(int tick, Event.LaserTrack track)>();
+            var objectTicks   = new List<int>();
+
+            for (int i = 0; i < points.Count;)
             {
-                int m = b.Time.Measure;
-                if (m >= 1 && m <= maxMeasure) perMeasure[m]++;
-            }
-            foreach (var l in lasers)
-            {
-                if (l.Flag == Event.LaserFlag.Start)
-                {
-                    int m = l.Time.Measure;
-                    if (m >= 1 && m <= maxMeasure) perMeasure[m]++;
-                }
-            }
-            double peak1 = WindowMax(perMeasure, maxMeasure, 1);
-            double peak2 = WindowMax(perMeasure, maxMeasure, 2);
-            double peak4 = WindowMax(perMeasure, maxMeasure, 4);
-            double peak8 = WindowMax(perMeasure, maxMeasure, 8);
+                var track  = points[i].Track;
+                var active = track == Event.LaserTrack.Left ? activeL : activeR;
+                int segStart = -1, lastTickL = 0, lastOffset = 0, lastDir = 0;
 
-            int bpmChanges = bpms.Count > 1 ? bpms.Count - 1 : 0;
-            double bpmMin = double.MaxValue, bpmMax = double.MinValue;
-            foreach (var bp in bpms)
-            {
-                if (bp.Value < bpmMin) bpmMin = bp.Value;
-                if (bp.Value > bpmMax) bpmMax = bp.Value;
-            }
-            double bpmRangeFrac = (bpmMax > 0 && bpmMin > 0 && bpmMax > bpmMin)
-                ? (bpmMax - bpmMin) / bpmMax : 0;
-
-            return new double[]
-            {
-                1.0,
-                chips / measures,
-                holds / measures,
-                holdRatio,
-                laserSegments / measures,
-                slamCount / measures,
-                laserActiveRatio,
-                bothLaserRatio,
-                buttonsDuringLaser / measures,
-                simultaneousLr / measures,
-                peak1,
-                peak2,
-                peak4,
-                peak8,
-                bpmChanges,
-                bpmRangeFrac,
-                stops.Count / measures,
-                tiltCount / measures,
-                level,
-            };
-        }
-
-        private static byte Predict(double[] features, double[] weights)
-        {
-            double sum = 0;
-            for (int i = 0; i < weights.Length; i++) sum += weights[i] * features[i];
-            if (sum <= 0) return 0;
-            if (sum >= MaxRadar) return MaxRadar;
-            return (byte)sum;
-        }
-
-        private static int AbsTick(Time t) => t.Measure * 192 + (t.Beat - 1) * 48 + t.Offset;
-
-        private static bool[] BuildLaserActive(List<Event.Laser> lasers, Event.LaserTrack track, int maxMeasure, out int segments)
-        {
-            int totalTicks = maxMeasure * 192;
-            var active = new bool[totalTicks];
-            segments = 0;
-
-            var filtered = new List<Event.Laser>();
-            foreach (var l in lasers)
-                if (l.Track == track) filtered.Add(l);
-            filtered.Sort((a, b) => AbsTick(a.Time).CompareTo(AbsTick(b.Time)));
-
-            int segStart = -1;
-            foreach (var l in filtered)
-            {
-                int tick = AbsTick(l.Time);
-                if (tick < 0 || tick >= totalTicks) continue;
-
-                if (l.Flag == Event.LaserFlag.Start)
+                void Close(int endTick)
                 {
                     segments++;
-                    segStart = tick;
-                }
-                else if (l.Flag == Event.LaserFlag.End && segStart >= 0)
-                {
-                    for (int t = segStart; t <= tick && t < totalTicks; t++) active[t] = true;
+                    segmentStarts.Add((segStart, track));
+                    objectTicks.Add(segStart);
+                    for (int t = Math.Max(0, segStart); t <= endTick && t < active.Length; t++)
+                        active[t] = true;
                     segStart = -1;
                 }
+
+                for (; i < points.Count && points[i].Track == track; i++)
+                {
+                    var p = points[i];
+
+                    // Identical consecutive points (same tick and offset) are artifacts of the KSH
+                    // slam alignment; the VOX parser drops them, so they carry no information here either
+                    if (segStart >= 0 && p.Tick == lastTickL && p.Offset == lastOffset)
+                    {
+                        if (p.Flag == Event.LaserFlag.End) Close(p.Tick);
+                        continue;
+                    }
+
+                    if (segStart < 0 || p.Flag == Event.LaserFlag.Start)
+                    {
+                        if (segStart >= 0) Close(lastTickL);
+                        segStart = p.Tick; lastTickL = p.Tick; lastOffset = p.Offset; lastDir = 0;
+                        if (p.Flag == Event.LaserFlag.End) Close(p.Tick);
+                        continue;
+                    }
+
+                    int delta = p.Offset - lastOffset;
+                    if (delta != 0)
+                    {
+                        if (p.Tick == lastTickL) { slamCount++; objectTicks.Add(p.Tick); }
+                        move += Math.Abs(delta) / 127.0;
+                        int dir = Math.Sign(delta);
+                        if (lastDir != 0 && dir != lastDir) dirChanges++;
+                        lastDir = dir;
+                    }
+                    lastOffset = p.Offset; lastTickL = p.Tick;
+
+                    if (p.Flag == Event.LaserFlag.End)
+                        Close(p.Tick);
+                }
+                if (segStart >= 0) Close(lastTickL);
             }
-            return active;
-        }
 
-        // Slam detection: multiple laser events at the same (track, absolute-tick).
-        // Works for both KSH-parsed (IsLaserSlam-tagged) and VOX-parsed charts.
-        private static int CountSlams(List<Event.Laser> lasers)
-        {
-            var byKey = new Dictionary<long, int>();
-            foreach (var l in lasers)
+            int activeLCount = 0, activeRCount = 0, bothCount = 0;
+            for (int t = 0; t < totalTicks; t++)
             {
-                long key = ((long)l.Track << 32) | (uint)AbsTick(l.Time);
-                if (!byKey.ContainsKey(key)) byKey[key] = 0;
-                byKey[key]++;
+                if (activeL[t]) activeLCount++;
+                if (activeR[t]) activeRCount++;
+                if (activeL[t] && activeR[t]) bothCount++;
             }
-            int slams = 0;
-            foreach (var kv in byKey)
-                if (kv.Value >= 2) slams++;
-            return slams;
-        }
 
-        private static int CountSet(bool[] a)
-        {
-            int n = 0;
-            for (int i = 0; i < a.Length; i++) if (a[i]) n++;
-            return n;
-        }
+            int sideSwitches = 0;
+            segmentStarts.Sort((a, b) => a.tick.CompareTo(b.tick));
+            for (int i = 1; i < segmentStarts.Count; i++)
+                if (segmentStarts[i].track != segmentStarts[i - 1].track) sideSwitches++;
 
-        private static int CountBoth(bool[] a, bool[] b)
-        {
-            int n = 0;
-            int len = Math.Min(a.Length, b.Length);
-            for (int i = 0; i < len; i++) if (a[i] && b[i]) n++;
-            return n;
-        }
-
-        private static double WindowMax(int[] perMeasure, int maxMeasure, int window)
-        {
-            if (maxMeasure < window) return 0;
-            int best = 0;
-            for (int i = 1; i <= maxMeasure - window + 1; i++)
+            // --- hands -------------------------------------------------------------------
+            int chords2 = 0, chords3 = 0, buttonsDuringLaser = 0, oneHand = 0, handTrip = 0;
+            int oneHandChords = 0, oneHandHolds = 0, bothKnob = 0;
+            foreach (var group in notes.GroupBy(n => n.Tick))
             {
-                int sum = 0;
-                for (int j = i; j < i + window; j++) sum += perMeasure[j];
+                int tick  = group.Key;
+                bool left  = tick >= 0 && tick < activeL.Length && activeL[tick];
+                bool right = tick >= 0 && tick < activeR.Length && activeR[tick];
+                int count  = group.Count();
+
+                if (count >= 2) chords2++;
+                if (count >= 3) chords3++;
+                if (left || right) buttonsDuringLaser += count;
+
+                if (left ^ right)
+                {
+                    oneHand += count;
+                    if (count >= 2) oneHandChords++;
+                    foreach (var n in group)
+                    {
+                        if (n.Hold > 0) oneHandHolds++;
+                        // The hand on the knob covers that side's buttons, the free hand has to cross over
+                        if (left == IsLeftSide(n.Track)) handTrip++;
+                    }
+                }
+                else if (left && right)
+                    bothKnob += count;
+            }
+
+            // --- tempo -------------------------------------------------------------------
+            var bpmTicks = bpms.Select(b => (tick: tl.TickOf(b.Time), b)).OrderBy(x => x.tick).ToList();
+            int bpmChanges = 0;
+            double bpmMin = double.MaxValue, bpmMax = 0;
+            for (int i = 0; i < bpmTicks.Count; i++)
+            {
+                float v = bpmTicks[i].b.Value;
+                if (v <= 0) continue;
+                bpmMin = Math.Min(bpmMin, v); bpmMax = Math.Max(bpmMax, v);
+                if (i > 0 && Math.Abs(v - bpmTicks[i - 1].b.Value) > 0.001) bpmChanges++;
+            }
+            double bpmRangeFrac = bpmMax > 0 && bpmMin < double.MaxValue ? (bpmMax - bpmMin) / bpmMax : 0;
+
+            // Stops: Event.Stop on the VOX side, Bpm.IsStop markers (until the next BPM event) on the KSH side
+            int stopCount = 0;
+            double stopTicks = 0;
+            foreach (var s in stops) { stopCount++; stopTicks += Math.Max(0, s.Duration); }
+            for (int i = 0; i < bpmTicks.Count; i++)
+            {
+                if (!bpmTicks[i].b.IsStop) continue;
+                stopCount++;
+                if (i + 1 < bpmTicks.Count) stopTicks += bpmTicks[i + 1].tick - bpmTicks[i].tick;
+            }
+
+            // --- camera ------------------------------------------------------------------
+            int camRot = 0, camRad = 0, camTilt = 0, laneClears = 0;
+            double camRotMag = 0, camRadMag = 0, camTiltMag = 0;
+            foreach (var cam in cameras)
+            {
+                // VOX stores camera values with 2 decimals, anything below that is rounding noise
+                double delta = Math.Abs(cam.End - cam.Start);
+                switch (cam.Work)
+                {
+                    case Camera.WorkType.Rotation:  if (delta >= 0.005) { camRot++;  camRotMag  += delta; } break;
+                    case Camera.WorkType.Radian:    if (delta >= 0.005) { camRad++;  camRadMag  += delta; } break;
+                    case Camera.WorkType.Tilt:      if (delta >= 0.005) { camTilt++; camTiltMag += delta; } break;
+                    case Camera.WorkType.LaneClear: laneClears++; break;
+                }
+            }
+
+            // --- density peaks -----------------------------------------------------------
+            foreach (var n in notes) objectTicks.Add(n.Tick);
+            var chipTicks = notes.Where(n => n.Hold == 0).Select(n => n.Tick).ToList();
+
+            int bins = totalTicks / TicksPerMeasure + 2;
+            var objBins  = new int[bins];
+            var chipBins = new int[bins];
+            foreach (int t in objectTicks) if (t >= 0) objBins[Math.Min(bins - 1, t / TicksPerMeasure)]++;
+            foreach (int t in chipTicks)   if (t >= 0) chipBins[Math.Min(bins - 1, t / TicksPerMeasure)]++;
+
+            var objSec  = objectTicks.Select(t => tl.SecondsAt(t)).OrderBy(x => x).ToList();
+            var chipSec = chipTicks.Select(t => tl.SecondsAt(t)).OrderBy(x => x).ToList();
+
+            // --- assemble ----------------------------------------------------------------
+            int objects = chips + holds + segments + slamCount;
+            int buttonsTotal = Math.Max(1, chips + holds);
+            var f = new Dictionary<string, double>();
+
+            void Rate(string name, double count)
+            {
+                f[name + "_pm"] = count / spanMeasures;
+                f[name + "_ps"] = count / spanSec;
+            }
+
+            Rate("chips", chips);
+            Rate("holds", holds);
+            Rate("objects", objects);
+            Rate("laser_segments", segments);
+            Rate("laser_points", points.Count);
+            Rate("slams", slamCount);
+            Rate("laser_move", move);
+            Rate("laser_dir_changes", dirChanges);
+            Rate("laser_side_switches", sideSwitches);
+            Rate("chords2", chords2);
+            Rate("chords3", chords3);
+            Rate("jack16", jack16);
+            Rate("jack8", jack8);
+            Rate("jack_runs", jackRuns);
+            Rate("offgrid", offgrid);
+            Rate("triplets", triplets);
+            Rate("buttons_during_laser", buttonsDuringLaser);
+            Rate("one_hand", oneHand);
+            Rate("hand_trip", handTrip);
+            Rate("one_hand_chords", oneHandChords);
+            Rate("one_hand_holds", oneHandHolds);
+            Rate("both_knob_buttons", bothKnob);
+            Rate("bpm_changes", bpmChanges);
+            Rate("stops", stopCount);
+            Rate("cam_rot", camRot);
+            Rate("cam_rad", camRad);
+            Rate("cam_tilt", camTilt);
+            Rate("tilt_modes", tiltModes);
+            Rate("lane_clears", laneClears);
+
+            f["total_measures"]     = totalMeasures;
+            f["span_measures"]      = spanMeasures;
+            f["total_sec"]          = totalSec;
+            f["span_sec"]           = spanSec;
+            f["span_ratio"]         = Math.Min(1.0, spanTicks / Math.Max(1.0, totalTicks));
+            f["avg_bpm"]            = (spanTicks / TicksPerBeat) / (spanSec / 60.0);
+            f["hold_ratio"]         = Math.Min(1.0, holdTicks / spanTicks);
+            f["laser_active_ratio"] = Math.Min(1.0, (activeLCount + activeRCount - bothCount) / spanTicks);
+            f["laser_both_ratio"]   = Math.Min(1.0, bothCount / spanTicks);
+            f["laser_l_ratio"]      = Math.Min(1.0, activeLCount / spanTicks);
+            f["laser_r_ratio"]      = Math.Min(1.0, activeRCount / spanTicks);
+            f["stop_ratio"]         = Math.Min(1.0, stopTicks / spanTicks);
+            f["offgrid_frac"]       = offgrid / (double)buttonsTotal;
+            f["one_hand_frac"]      = oneHand / (double)buttonsTotal;
+            f["hand_trip_frac"]     = handTrip / (double)buttonsTotal;
+            f["bpm_range_frac"]     = bpmRangeFrac;
+            f["cam_rot_mag_pm"]     = camRotMag / spanMeasures;
+            f["cam_rad_mag_pm"]     = camRadMag / spanMeasures;
+            f["cam_tilt_mag_pm"]    = camTiltMag / spanMeasures;
+            f["peak_obj_1m"]        = WindowMax(objBins, 1);
+            f["peak_obj_2m"]        = WindowMax(objBins, 2);
+            f["peak_obj_4m"]        = WindowMax(objBins, 4);
+            f["peak_obj_8m"]        = WindowMax(objBins, 8);
+            f["peak_chip_1m"]       = WindowMax(chipBins, 1);
+            f["peak_chip_2m"]       = WindowMax(chipBins, 2);
+            f["peak_chip_4m"]       = WindowMax(chipBins, 4);
+            f["peak_obj_1s"]        = WindowMax(objSec, 1.0);
+            f["peak_obj_2s"]        = WindowMax(objSec, 2.0) / 2.0;
+            f["peak_obj_4s"]        = WindowMax(objSec, 4.0) / 4.0;
+            f["peak_chip_1s"]       = WindowMax(chipSec, 1.0);
+            f["peak_chip_2s"]       = WindowMax(chipSec, 2.0) / 2.0;
+            f["level"]              = level;
+
+            var result = new double[FeatureNames.Length];
+            for (int i = 0; i < FeatureNames.Length; i++)
+                result[i] = f[FeatureNames[i]];
+            return result;
+        }
+
+        // Busiest run of `window` consecutive bins, averaged per bin
+        private static double WindowMax(int[] bins, int window)
+        {
+            if (bins.Length < window) return 0;
+            int sum = 0, best = 0;
+            for (int i = 0; i < bins.Length; i++)
+            {
+                sum += bins[i];
+                if (i >= window) sum -= bins[i - window];
                 if (sum > best) best = sum;
             }
             return best / (double)window;
+        }
+
+        // Most events inside any `window` seconds
+        private static double WindowMax(List<double> sortedSeconds, double window)
+        {
+            int best = 0, j = 0;
+            for (int i = 0; i < sortedSeconds.Count; i++)
+            {
+                while (sortedSeconds[i] - sortedSeconds[j] > window) j++;
+                best = Math.Max(best, i - j + 1);
+            }
+            return best;
         }
     }
 }

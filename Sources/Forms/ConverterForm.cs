@@ -121,6 +121,10 @@ namespace VoxCharger
         public Action Action           { get; private set; } = null;
         public Dictionary<string, Action> ActionSet { get; private set; } = new Dictionary<string, Action>();
 
+        // Bulk import: folder each imported song came from, and songs skipped because the mix already had them
+        public Dictionary<VoxHeader, string> SourceFolders { get; private set; } = new Dictionary<VoxHeader, string>();
+        public int SkippedCount { get; private set; }
+
         public ConverterForm(string path, ConvertMode convert)
         {
             InitializeComponent();
@@ -582,6 +586,8 @@ namespace VoxCharger
                     Format            = AudioFormat.Iidx,
                     PreviewOffset     = PreviewTimePicker.Value.Minute * 60 + PreviewTimePicker.Value.Second,
                     NormalizeLoudness = true,
+                    // KSH o= is applied to the audio, not the chart (see Ksh.Parse)
+                    MusicOffsetMs     = _exporter.Source.MusicOffset,
                 };
 
                 // Audio is equalized to TargetLufs; pin VoxHeader.Volume to the
@@ -636,99 +642,55 @@ namespace VoxCharger
             }
         }
 
+        // Unlike the other modes, bulk import writes every song's assets into the mix while it
+        // runs (memory stays flat on large packs). ResultSet only needs to be added to the db
+        // and saved; ActionSet stays empty.
         private void BulkImport()
         {
-            var output  = new List<VoxHeader>();
-            var actions = new Dictionary<string, Action>();
-            var errors  = new List<string>();
+            var settings = new KshBulkImporter.Settings
+            {
+                StartId      = (int)StartingIdNumericUpDown.Value,
+                ParseOption  = Options,
+                BackgroundId = short.Parse((BackgroundDropDown.SelectedItem ?? "0").ToString().Split(' ')[0]),
+                Version      = (GameVersion)(VersionDropDown.SelectedIndex + 1),
+                InfVersion   = InfVerDropDown.SelectedIndex == 0 ? InfiniteVersion.Mxm : (InfiniteVersion)(InfVerDropDown.SelectedIndex + 1),
+            };
+
+            KshBulkImporter.Result result = null;
             using (var loader = new LoadingForm())
             {
                 loader.SetAction(dialog =>
                 {
-                    var directories = Directory.GetDirectories(_target);
-                    int current     = 0;
-                    foreach (string dir in directories)
+                    var progress = new AsphyxiaImporter.Progress
                     {
-                        dialog.SetStatus($"Processing {Path.GetFileName(dir)}..");
-                        dialog.SetProgress((current + 1 / (float)directories.Length) * 100f);
+                        Status  = s => dialog.SetStatus(s),
+                        Percent = p => dialog.SetProgress(p),
+                        Log     = s => Debug.WriteLine(s),
+                    };
 
-                        var files = Directory.GetFiles(dir, "*.ksh");
-                        if (files.Length == 0)
-                            continue;
-
-                        string fn = files[0];
-
-                        try
-                        {
-                            var ksh = new Ksh();
-                            ksh.Parse(fn, Options);
-
-                            var header          = ksh.ToHeader();
-                            header.Id           = (int)StartingIdNumericUpDown.Value + current++;
-                            header.BackgroundId = short.Parse((BackgroundDropDown.SelectedItem ?? "0").ToString().Split(' ')[0]);
-                            header.Version      = (GameVersion)(VersionDropDown.SelectedIndex + 1);
-                            header.InfVersion   = InfVerDropDown.SelectedIndex == 0 ? InfiniteVersion.Mxm : (InfiniteVersion)(InfVerDropDown.SelectedIndex + 1);
-                            header.GenreId      = 16;
-                            header.Levels       = new Dictionary<Difficulty, VoxLevelHeader>();
-
-                            string ascii = Path.GetFileName(Path.GetDirectoryName(fn));
-                            if (AssetManager.Headers.Any(v => v.Ascii == ascii)     || // Duplicate header with same ascii
-                                Directory.Exists(AssetManager.GetMusicPath(header)) || // Asset that use the ascii is already exists
-                                output.Any(h => h.Ascii == ascii))                     // Output with same ascii is already exists
-                            {
-                                continue;
-                            }
-
-                            var charts   = Ksh.Exporter.GetCharts(Path.GetDirectoryName(fn), header.Title);
-                            var exporter = new Ksh.Exporter(ksh);
-
-                            header.Ascii = ascii;
-
-                            var importOptions = new AudioImportOptions
-                            {
-                                NormalizeLoudness = true,
-                            };
-                            header.Volume = importOptions.TargetVolume;
-
-                            // Same auto lead-in / tail-fade policy as
-                            // single-import. Each chart in the bulk run
-                            // gets its own shift sized from its own first/
-                            // last event, so we toggle Options.LeadInMeasures
-                            // per-iteration and reset after Export.
-                            int leadInMeasures = Ksh.ApplyAutoLeadInTo(ksh, importOptions);
-                            int prevLeadIn     = Options.LeadInMeasures;
-                            Options.LeadInMeasures = leadInMeasures;
-                            try
-                            {
-                                exporter.Export(header, charts, Options, importOptions);
-                            }
-                            finally
-                            {
-                                Options.LeadInMeasures = prevLeadIn;
-                            }
-
-                            output.Add(header);
-                            actions.Add(ascii, exporter.Action);
-                        }
-                        catch (Exception ex)
-                        {
-                            string err = $"Failed attempt to convert ksh file: {Path.GetFileName(fn)} ({ex.Message})";
-                            errors.Add(err);
-                            Debug.WriteLine(err);
-                        }
+                    try
+                    {
+                        result = KshBulkImporter.Run(_target, settings, progress);
                     }
-
-                    dialog.Complete();
+                    finally
+                    {
+                        dialog.Complete();
+                    }
                 });
 
                 loader.ShowDialog();
             }
 
+            var errors = result?.Errors ?? new List<string> { "Bulk import failed" };
             if (errors.Count != 0)
             {
-                string message = "Failed to import one or more charts:";
-                foreach (string err in errors)
+                // Thousands of failures don't fit in a message box
+                const int maxShown = 30;
+                string message = $"Failed to import {errors.Count} chart(s):";
+                foreach (string err in errors.Take(maxShown))
                     message += $"\n{err}";
+                if (errors.Count > maxShown)
+                    message += $"\n... and {errors.Count - maxShown} more";
 
                 MessageBox.Show(
                    message,
@@ -738,8 +700,11 @@ namespace VoxCharger
                );
             }
 
-            ResultSet = output.ToArray();
-            ActionSet = actions;
+            var imported  = result?.Imported ?? new List<KshBulkImporter.Song>();
+            ResultSet     = imported.Select(s => s.Header).ToArray();
+            SourceFolders = imported.ToDictionary(s => s.Header, s => s.Folder);
+            ActionSet     = new Dictionary<string, Action>();
+            SkippedCount  = result?.Skipped ?? 0;
 
             DialogResult = DialogResult.OK;
             Close();

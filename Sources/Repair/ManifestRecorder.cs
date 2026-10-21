@@ -12,26 +12,115 @@ namespace VoxCharger
     // a broken manifest must never break an import.
     internal static class ManifestRecorder
     {
+        // Imports export several charts in parallel, so loading, updating and saving the
+        // manifest is serialized. During a batch the manifest stays in memory and is written
+        // every BatchSaveInterval charts and at the end, instead of rewriting the whole
+        // (growing) file once per chart.
+        private const int BatchSaveInterval = 50;
+        private static readonly object _lock = new object();
+        private static Manifest _batch;
+        private static int _batchDepth;
+        private static int _batchPending;
+
+        public static void BeginBatch()
+        {
+            lock (_lock)
+                _batchDepth++;
+        }
+
+        public static void EndBatch()
+        {
+            lock (_lock)
+            {
+                if (_batchDepth == 0 || --_batchDepth > 0)
+                    return;
+
+                if (_batch != null && _batchPending > 0)
+                    TrySave(_batch);
+
+                _batch        = null;
+                _batchPending = 0;
+            }
+        }
+
         public static void RecordExport(VoxHeader header, Dictionary<Difficulty, ChartInfo> charts, AudioImportOptions opt)
         {
             if (string.IsNullOrEmpty(AssetManager.MixPath))
                 return;
 
-            var manifest = Manifest.Load(AssetManager.MixPath);
-            var entry    = manifest.GetOrCreate(header.Id);
+            // Hashing reads every source and output file, keep it outside the lock
+            var sourceFiles = HashSourceFiles(charts, out string sourceDir);
+            var outputs     = HashOutputs(header, charts, opt);
 
-            entry.Id                 = header.Id;
-            entry.Ascii              = header.Ascii ?? string.Empty;
-            entry.CodeName           = header.CodeName ?? string.Empty;
-            entry.VoxchargerVersion  = Manifest.CurrentVoxchargerVersion;
-            entry.ExportedAt         = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            entry.AudioFormat        = (opt?.Format ?? AudioFormat.Iidx).ToString();
+            Update(manifest =>
+            {
+                var entry = manifest.GetOrCreate(header.Id);
 
-            entry.SourceFiles = HashSourceFiles(charts, out string sourceDir);
-            entry.SourceDir   = sourceDir ?? string.Empty;
-            entry.Outputs     = HashOutputs(header, charts, opt);
+                entry.Id                 = header.Id;
+                entry.Ascii              = header.Ascii ?? string.Empty;
+                entry.CodeName           = header.CodeName ?? string.Empty;
+                entry.VoxchargerVersion  = Manifest.CurrentVoxchargerVersion;
+                entry.ExportedAt         = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                entry.AudioFormat        = (opt?.Format ?? AudioFormat.Iidx).ToString();
 
-            manifest.Save(AssetManager.MixPath);
+                entry.SourceFiles = sourceFiles;
+                entry.SourceDir   = sourceDir ?? string.Empty;
+                entry.Outputs     = outputs;
+            });
+        }
+
+        // Re-records a song's thumbnails after they were rebuilt or moved, leaving the other outputs alone
+        public static void UpdateThumbnails(VoxHeader header)
+        {
+            if (string.IsNullOrEmpty(AssetManager.MixPath))
+                return;
+
+            var thumbnails = new Dictionary<string, string>();
+            foreach (var diff in header.Levels.Keys)
+                AddRelative(thumbnails, AssetManager.MixPath, $"{AssetManager.GetThumbnailJacketPath(header, diff)}.png");
+
+            Update(manifest =>
+            {
+                if (!manifest.TryGet(header.Id, out var entry))
+                    return;
+
+                foreach (string key in entry.Outputs.Keys.Where(k => k.StartsWith("graphics/", StringComparison.OrdinalIgnoreCase)).ToList())
+                    entry.Outputs.Remove(key);
+                foreach (var thumbnail in thumbnails)
+                    entry.Outputs[thumbnail.Key] = thumbnail.Value;
+            });
+        }
+
+        // Runs `update` on the manifest under the lock and saves it, immediately or at the batch interval
+        private static void Update(Action<Manifest> update)
+        {
+            lock (_lock)
+            {
+                var manifest = _batchDepth > 0 ? (_batch = _batch ?? Manifest.Load(AssetManager.MixPath)) : Manifest.Load(AssetManager.MixPath);
+                update(manifest);
+
+                if (_batchDepth == 0)
+                {
+                    manifest.Save(AssetManager.MixPath);
+                }
+                else if (++_batchPending >= BatchSaveInterval)
+                {
+                    TrySave(manifest);
+                    _batchPending = 0;
+                }
+            }
+        }
+
+        private static void TrySave(Manifest manifest)
+        {
+            try
+            {
+                manifest.Save(AssetManager.MixPath);
+            }
+            catch (Exception)
+            {
+                // Best effort, like every other manifest write
+            }
         }
 
         private static Dictionary<string, string> HashSourceFiles(Dictionary<Difficulty, ChartInfo> charts, out string sourceDir)

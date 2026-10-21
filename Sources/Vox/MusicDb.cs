@@ -215,13 +215,16 @@ namespace VoxCharger
 
                     if (lvHeader.Radar != null)
                     {
+                        // Nabla stores radar values as u16 (stock peak goes above 255). The game's
+                        // property reader is type-strict, u8 nodes come back empty.
+                        string radarType = isNabla ? "u16" : "u8";
                         var radar = detail.AppendChild(createMetaElement(doc, "radar", null, null));
-                        radar.AppendChild(createMetaElement(doc, "notes", lvHeader.Radar.Notes.ToString(), "u8"));
-                        radar.AppendChild(createMetaElement(doc, "peak", lvHeader.Radar.Peak.ToString(), "u8"));
-                        radar.AppendChild(createMetaElement(doc, "tsumami", lvHeader.Radar.Lasers.ToString(), "u8"));
-                        radar.AppendChild(createMetaElement(doc, "tricky", lvHeader.Radar.Tricky.ToString(), "u8"));
-                        radar.AppendChild(createMetaElement(doc, "hand-trip", lvHeader.Radar.HandTrip.ToString(), "u8"));
-                        radar.AppendChild(createMetaElement(doc, "one-hand", lvHeader.Radar.OneHand.ToString(), "u8"));
+                        radar.AppendChild(createMetaElement(doc, "notes", lvHeader.Radar.Notes.ToString(), radarType));
+                        radar.AppendChild(createMetaElement(doc, "peak", lvHeader.Radar.Peak.ToString(), radarType));
+                        radar.AppendChild(createMetaElement(doc, "tsumami", lvHeader.Radar.Lasers.ToString(), radarType));
+                        radar.AppendChild(createMetaElement(doc, "tricky", lvHeader.Radar.Tricky.ToString(), radarType));
+                        radar.AppendChild(createMetaElement(doc, "hand-trip", lvHeader.Radar.HandTrip.ToString(), radarType));
+                        radar.AppendChild(createMetaElement(doc, "one-hand", lvHeader.Radar.OneHand.ToString(), radarType));
                     }
 
                     diffInfo.AppendChild(detail);

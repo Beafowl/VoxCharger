@@ -66,6 +66,7 @@ namespace VoxCharger
             var items = songs.Select(s => new Item { Song = s, Mid = s.mid }).ToList();
             ApplyStartId(items, progress);
 
+            ManifestRecorder.BeginBatch();
             try
             {
                 DownloadAll(items, progress);
@@ -74,6 +75,7 @@ namespace VoxCharger
             }
             finally
             {
+                ManifestRecorder.EndBatch();
                 foreach (var it in items)
                 {
                     if (!string.IsNullOrEmpty(it.TempDir))
@@ -84,25 +86,24 @@ namespace VoxCharger
             return result;
         }
 
-        // Songs below the mix's starting id move to the first free ids at or above it, in mid order.
-        // Ids kept by other songs of the list count as taken, this mix's own songs don't, so importing
-        // the same list again maps every song to the same id and replaces it.
+        // With a starting id the list is numbered consecutively from it, in mid order (the list's
+        // mids only define the order). Ids of the game, other mixes and the tutorial are skipped,
+        // this mix's own songs aren't, so importing the same list again yields the same ids and
+        // replaces the songs.
         private static void ApplyStartId(List<Item> items, Progress progress)
         {
-            int startId = AssetManager.MixStartId;
-            if (startId <= 0)
+            int next = AssetManager.MixStartId;
+            if (next <= 0)
                 return;
 
-            var taken = new HashSet<int>(items.Where(i => i.Mid >= startId).Select(i => i.Mid));
-            int next  = startId;
-            foreach (var it in items.Where(i => i.Mid < startId).OrderBy(i => i.Mid))
+            foreach (var it in items.OrderBy(i => i.Mid).ThenBy(i => i.Song.nauticaId).ToList())
             {
-                while (taken.Contains(next) || !AssetManager.ValidateMusicId(next))
+                while (!AssetManager.ValidateMusicId(next))
                     next++;
 
-                progress.Write($"  ID {it.Mid} -> {next} {it.Song.title}");
-                it.Mid = next;
-                taken.Add(next);
+                if (it.Mid != next)
+                    progress.Write($"  ID {it.Mid} -> {next} {it.Song.title}");
+                it.Mid = next++;
             }
         }
 
@@ -189,7 +190,7 @@ namespace VoxCharger
                         // Stable ASCII code derived from the title; same
                         // sanitization the asphyxia bulk path uses.
                         if (string.IsNullOrEmpty(header.Ascii))
-                            header.Ascii = SanitizeAscii(it.Song.title);
+                            header.Ascii = VoxHeader.ToAscii(it.Song.title);
 
                         var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
                         audioOptions.NormalizeLoudness = true;
@@ -227,34 +228,7 @@ namespace VoxCharger
         // jacket bitmaps (unmanaged GDI+ memory), parsed charts and temp files.
         private static void Release(Item it, Dictionary<Difficulty, ChartInfo> charts)
         {
-            if (it.Header?.Levels != null)
-            {
-                foreach (var level in it.Header.Levels.Values)
-                {
-                    level.Jacket?.Dispose();
-                    level.Jacket = null;
-                    level.Chart  = null;
-                }
-            }
-
-            if (charts != null)
-            {
-                foreach (var info in charts.Values)
-                {
-                    info.Header?.Jacket?.Dispose();
-                    if (info.Header != null)
-                        info.Header.Jacket = null;
-
-                    info.Source = null;
-
-                    // Exporter copies the music into %TEMP% under a random name
-                    if (!string.IsNullOrEmpty(info.MusicFileName) && File.Exists(info.MusicFileName))
-                    {
-                        try { File.Delete(info.MusicFileName); }
-                        catch { /* best effort */ }
-                    }
-                }
-            }
+            Ksh.Exporter.Release(it.Header, charts);
 
             if (!string.IsNullOrEmpty(it.TempDir))
             {
@@ -280,25 +254,6 @@ namespace VoxCharger
                 result.Imported++;
             }
             progress.SetPercent(100f);
-        }
-
-        // Mirror of the asphyxia plugin's sanitizeAscii: lowercase ASCII
-        // alphanumerics from the title, underscored, capped at 16 chars.
-        private static string SanitizeAscii(string title)
-        {
-            if (string.IsNullOrEmpty(title)) return "custom";
-            var chars = new char[title.Length];
-            for (int i = 0; i < title.Length; i++)
-            {
-                char c = title[i];
-                bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-                chars[i] = ok ? char.ToLowerInvariant(c) : '_';
-            }
-            string s = new string(chars);
-            while (s.Contains("__")) s = s.Replace("__", "_");
-            s = s.Trim('_');
-            if (s.Length > 16) s = s.Substring(0, 16);
-            return s.Length == 0 ? "custom" : s;
         }
     }
 }

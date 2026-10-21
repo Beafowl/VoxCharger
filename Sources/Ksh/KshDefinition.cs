@@ -26,10 +26,8 @@ namespace VoxCharger
                     continue;
                 }
 
-                _definitions.Add(
-                    prop[0].Trim(),
-                    prop[1].Trim()
-                );
+                // Charts in the wild repeat parameters ("period=1/2;period=1/2"), the last one wins
+                _definitions[prop[0].Trim()] = prop[1].Trim();
             }
         }
 

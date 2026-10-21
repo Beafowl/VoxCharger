@@ -229,8 +229,13 @@ namespace VoxCharger
                     // Handle stop event
                     if (data[2].EndsWith("-"))
                     {
+                        // A stop marker while a stop is open ends the previous stop here and starts a new one
                         if (stop != null)
-                            Debug.WriteLine($"[BPM_INFO] {i+1:D4}: Duplicate stop event");
+                        {
+                            var previous = Events.GetTimeSignature(stop.Time);
+                            stop.Duration = time.Difference(stop.Time, previous);
+                            Events.Add(stop);
+                        }
 
                         stop = new Event.Stop(time);
                     }
@@ -405,8 +410,33 @@ namespace VoxCharger
                     * Depends on type, refer to Camera
                     */
 
-                    Debug.WriteLine($"[SPCONTROLLER_INFO] {i+1:D4}: {line}");
+                    // mmm,bb,cc  work  id  duration  start  end  ?  ?
+                    // Only the works VoxCharger models are kept (CAM_RotX, CAM_Radi, Tilt, LaneY).
+                    // Realize, AIR*, SpecialN, BAROFF and friends are display setup, not gameplay.
+                    if (data.Length < 6 || time == null)
+                        continue;
 
+                    var work = Camera.WorkType.None;
+                    switch (data[1])
+                    {
+                        case "CAM_RotX": work = Camera.WorkType.Rotation;  break;
+                        case "CAM_Radi": work = Camera.WorkType.Radian;    break;
+                        case "Tilt":     work = Camera.WorkType.Tilt;      break;
+                        case "LaneY":    work = Camera.WorkType.LaneClear; break;
+                    }
+
+                    if (work == Camera.WorkType.None)
+                        continue;
+
+                    if (!int.TryParse(data[3], out int duration) ||
+                        !float.TryParse(data[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float start) ||
+                        !float.TryParse(data[5], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float end))
+                    {
+                        Debug.WriteLine($"[SPCONTROLLER_INFO] {i+1:D4}: Invalid camera work format");
+                        continue;
+                    }
+
+                    Events.Add(Camera.Create(work, time, duration, start, end));
                 }
                 #endregion
                 #region --- TRACK ---
@@ -497,26 +527,23 @@ namespace VoxCharger
 
                         if (slam != null)
                         {
-                            // Duplicate slam, handle gracefully
-                            if (slam is Event.Slam s)
-                                slam = s.End;
+                            // Pair with the latest point at this time on this track (chained slams end up
+                            // as Slam objects, whose End is the point to continue from)
+                            var previous = Events[time]
+                                .Where(ev => (ev is Event.Laser l && l.Track == laser.Track) || (ev is Event.Slam s && s.Track == laser.Track))
+                                .Select(ev => ev is Event.Slam s ? s.End : (Event.Laser)ev)
+                                .Last();
 
-                            var start = slam as Event.Laser;
-                            var end   = laser;
-
-                            if (start.Offset == end.Offset)
+                            // Not every second point at the same time is a slam: a segment that ended here
+                            // followed by a new one, or two points at the same position (zero-length
+                            // segment, high-resolution KSH charts produce these) are kept as plain points
+                            if (previous.Flag == Event.LaserFlag.End || previous.Offset == laser.Offset)
                             {
-                                Debug.WriteLine($"[TRACK_{trackId}] {i+1:D4}: Invalid slam offset");
+                                Events.Add(laser);
                                 continue;
                             }
 
-                            if (start.Track != end.Track)
-                            {
-                                Debug.WriteLine($"[TRACK_{trackId}] {i+1:D4}: Invalid slam track");
-                                continue;
-                            }
-
-                            Events.Add(new Event.Slam(time, start, end));
+                            Events.Add(new Event.Slam(time, previous, laser));
                         }
                         else
                             Events.Add(laser);
@@ -533,9 +560,11 @@ namespace VoxCharger
                             // Hold Fx
                             if (holdLength > 0)
                             {
-                                if (int.TryParse(data[2], out int fxIndex) && fxIndex - 2 < Effects.Count)
+                                // Effect references start at 2 in the FXBUTTON EFFECT INFO numbering;
+                                // 0 and 1 mean no effect (VoxCharger writes 0 for holds without one)
+                                if (int.TryParse(data[2], out int fxIndex) && fxIndex >= 2 && fxIndex - 2 < Effects.Count)
                                     chip.HoldFx = Effects[fxIndex - 2];
-                                else
+                                else if (fxIndex >= 2)
                                     Debug.WriteLine($"[TRACK_{trackId}] {i+1:D4}: Invalid chip hold effect index");
                             }
                             else

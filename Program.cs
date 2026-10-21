@@ -82,6 +82,18 @@ namespace VoxCharger
                 return;
             }
 
+            if (input == "--recompute-radar")
+            {
+                RunRecomputeRadar(argList);
+                return;
+            }
+
+            if (input == "--rebuild-thumbnails")
+            {
+                RunRebuildThumbnails(argList);
+                return;
+            }
+
             if (input == "--repair")
             {
                 RunRepairMix(argList);
@@ -312,105 +324,27 @@ namespace VoxCharger
 
                 LoadOrRepairMix(gamePath, mixName);
 
-                // Find all song folders (each should contain .ksh files)
-                var songFolders = Directory.GetDirectories(inputDir)
-                    .Where(d => Directory.GetFiles(d, "*.ksh").Length > 0)
-                    .ToArray();
-
-                if (songFolders.Length == 0)
+                // Song folders are found at any depth, so grouped packs work as-is
+                var result = KshBulkImporter.Run(inputDir, new KshBulkImporter.Settings { StartId = startId }, new AsphyxiaImporter.Progress
                 {
-                    Console.Error.WriteLine("No song folders with .ksh files found.");
-                    return;
-                }
-
-                Console.WriteLine($"Found {songFolders.Length} song folder(s)");
-                Console.WriteLine();
-
-                // Phase 1: Parse all charts in parallel
-                Console.WriteLine("Phase 1: Parsing charts...");
-                var parsedSongs = new ConcurrentBag<(string folder, Ksh mainKsh, Dictionary<Difficulty, ChartInfo> charts, string error)>();
-
-                Parallel.ForEach(songFolders, folder =>
-                {
-                    try
-                    {
-                        var kshFiles = Directory.GetFiles(folder, "*.ksh");
-                        if (kshFiles.Length == 0) return;
-
-                        var mainKsh = new Ksh();
-                        mainKsh.Parse(kshFiles[0]);
-
-                        var charts = Ksh.Exporter.GetCharts(folder, mainKsh.Title);
-                        if (charts.Count > 0)
-                            parsedSongs.Add((folder, mainKsh, charts, null));
-                        else
-                            parsedSongs.Add((folder, null, null, "No charts found"));
-                    }
-                    catch (Exception ex)
-                    {
-                        parsedSongs.Add((folder, null, null, ex.Message));
-                    }
+                    Log = s => Console.WriteLine(s),
                 });
 
-                var sorted = parsedSongs.OrderBy(s => s.folder).ToList();
-                int parseErrors = sorted.Count(s => s.error != null);
-                Console.WriteLine($"  Parsed: {sorted.Count - parseErrors} OK, {parseErrors} errors");
-
-                // Phase 2: Import sequentially (AssetManager is not thread-safe)
-                Console.WriteLine("Phase 2: Importing assets...");
-                int success = 0;
-                int failed = 0;
-
-                foreach (var song in sorted)
-                {
-                    string folderName = Path.GetFileName(song.folder);
-
-                    if (song.error != null)
-                    {
-                        Console.WriteLine($"  SKIP {folderName}: {song.error}");
-                        failed++;
-                        continue;
-                    }
-
-                    try
-                    {
-                        var header = song.mainKsh.ToHeader();
-                        header.Id = startId > 0 ? startId++ : AssetManager.GetNextMusicId();
-                        header.Version = GameVersion.Nabla;
-                        header.GenreId = 16;
-                        header.BackgroundId = 0;
-                        header.Levels = new Dictionary<Difficulty, VoxLevelHeader>();
-
-                        var exporter = new Ksh.Exporter(song.mainKsh);
-                        var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
-                        audioOptions.NormalizeLoudness = true;
-                        audioOptions.MusicOffsetMs     = song.mainKsh.MusicOffset;
-                        header.Volume = audioOptions.TargetVolume;
-                        exporter.Export(header, song.charts, null, audioOptions);
-
-                        if (exporter.Action != null)
-                            exporter.Action.Invoke();
-
-                        AssetManager.Headers.Add(header);
-
-                        string diffs = string.Join(", ", song.charts.Select(c => $"{c.Key}:{c.Value.Header.Level}"));
-                        Console.WriteLine($"  OK   {folderName} -> ID {header.Id} [{diffs}]");
-                        success++;
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.Error.WriteLine($"  FAIL {folderName}: {ex.Message}");
-                        if (DebugMode) Console.Error.WriteLine($"       {ex.StackTrace}");
-                        failed++;
-                    }
-                }
+                foreach (var song in result.Imported)
+                    AssetManager.Headers.Add(song.Header);
 
                 // Save DB once at the end
                 AssetManager.Headers.Save(AssetManager.MdbFilename);
 
                 sw.Stop();
                 Console.WriteLine();
-                Console.WriteLine($"Done! {success} imported, {failed} failed in {sw.Elapsed.TotalSeconds:F1}s");
+                Console.WriteLine($"Done! {result.Imported.Count} imported, {result.Errors.Count} failed, {result.Skipped} skipped (already in the mix) in {sw.Elapsed.TotalSeconds:F1}s");
+                if (result.Errors.Count > 0)
+                {
+                    Console.WriteLine("Errors:");
+                    foreach (var e in result.Errors) Console.WriteLine("  - " + e);
+                }
+                WarnJacketLimit();
             }
             catch (Exception ex)
             {
@@ -863,6 +797,7 @@ namespace VoxCharger
                     Console.WriteLine("Errors:");
                     foreach (var e in result.Errors) Console.WriteLine("  - " + e);
                 }
+                WarnJacketLimit();
             }
             catch (Exception ex)
             {
@@ -891,6 +826,84 @@ namespace VoxCharger
             }
 
             RadarCalibrator.Calibrate(gameData, csv);
+        }
+
+        // Song select shows the dummy jacket for ids above AssetManager.MaxJacketMusicId
+        private static void WarnJacketLimit()
+        {
+            int above = AssetManager.Headers.Count(h => h.Id > AssetManager.MaxJacketMusicId);
+            if (above > 0)
+                Console.WriteLine($"Warning: {above} song(s) have an ID above {AssetManager.MaxJacketMusicId}; the game shows no jacket for them at song select (set a starting ID below that).");
+        }
+
+        // CLI entry for `--rebuild-thumbnails --game-path <path> --mix <name>`: rebuilds the song
+        // select thumbnails of a mix (128x128, spread over the game's jacket archives).
+        private static void RunRebuildThumbnails(List<string> argList)
+        {
+            string gamePath = null, mixName = null;
+            for (int i = 1; i < argList.Count; i++)
+            {
+                if (argList[i] == "--game-path" && i + 1 < argList.Count) gamePath = argList[++i];
+                else if (argList[i] == "--mix" && i + 1 < argList.Count) mixName = argList[++i];
+            }
+
+            if (string.IsNullOrEmpty(gamePath) || string.IsNullOrEmpty(mixName))
+            {
+                Console.Error.WriteLine("Usage: VoxCharger.exe --rebuild-thumbnails --game-path <path> --mix <name>");
+                return;
+            }
+
+            try
+            {
+                AssetManager.Initialize(gamePath);
+                AssetManager.LoadMix(mixName);
+
+                var result = ThumbnailRebuilder.Run(new AsphyxiaImporter.Progress { Status = s => Console.WriteLine(s) });
+                Console.WriteLine($"Done! {result.Rebuilt} thumbnail(s) rebuilt, {result.Removed} stale file(s) removed, {result.Missing} chart(s) without jacket, {result.Errors.Count} error(s)");
+                foreach (var e in result.Errors) Console.WriteLine("  - " + e);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+                if (DebugMode) Console.Error.WriteLine(ex.StackTrace);
+                Environment.ExitCode = 1;
+            }
+        }
+
+        // CLI entry for `--recompute-radar --game-path <path> --mix <name>`: recomputes the
+        // radar of every chart in the mix from its .vox files and saves the music db.
+        private static void RunRecomputeRadar(List<string> argList)
+        {
+            string gamePath = null, mixName = null;
+            for (int i = 1; i < argList.Count; i++)
+            {
+                if (argList[i] == "--game-path" && i + 1 < argList.Count) gamePath = argList[++i];
+                else if (argList[i] == "--mix" && i + 1 < argList.Count) mixName = argList[++i];
+            }
+
+            if (string.IsNullOrEmpty(gamePath) || string.IsNullOrEmpty(mixName))
+            {
+                Console.Error.WriteLine("Usage: VoxCharger.exe --recompute-radar --game-path <path> --mix <name>");
+                return;
+            }
+
+            try
+            {
+                AssetManager.Initialize(gamePath);
+                AssetManager.LoadMix(mixName);
+
+                var result = RadarRecalculator.Run(new AsphyxiaImporter.Progress { Status = s => Console.WriteLine(s) });
+                AssetManager.Headers.Save(AssetManager.MdbFilename);
+
+                Console.WriteLine($"Done! {result.Updated} chart(s) updated, {result.Missing} without chart file, {result.Errors.Count} error(s)");
+                foreach (var e in result.Errors) Console.WriteLine("  - " + e);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+                if (DebugMode) Console.Error.WriteLine(ex.StackTrace);
+                Environment.ExitCode = 1;
+            }
         }
 
         // Load the mix if it's already on disk; if the directory exists but its
@@ -979,8 +992,12 @@ namespace VoxCharger
             Console.WriteLine();
             Console.WriteLine("Radar Calibration:");
             Console.WriteLine("  VoxCharger.exe --calibrate-radar <game_data_dir> [--csv <output.csv>]");
-            Console.WriteLine("  Fits RadarCalculator coefficients against official Konami radar values.");
+            Console.WriteLine("  Writes the radar feature CSV of the stock charts and checks RadarCalculator against them.");
             Console.WriteLine("  <game_data_dir> should contain `others/music_db.xml` and `music/`.");
+            Console.WriteLine("  VoxCharger.exe --recompute-radar --game-path <path> --mix <name>");
+            Console.WriteLine("  Recomputes the radar of every chart in a mix from its .vox files.");
+            Console.WriteLine("  VoxCharger.exe --rebuild-thumbnails --game-path <path> --mix <name>");
+            Console.WriteLine("  Rebuilds the song select thumbnails of a mix (128x128, spread over the jacket archives).");
             Console.WriteLine();
             Console.WriteLine("Repair Mix:");
             Console.WriteLine("  VoxCharger.exe --repair --game-path <path> --mix <name> [--apply]");

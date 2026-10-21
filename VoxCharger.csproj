@@ -209,6 +209,8 @@
     <Compile Include="Sources\AssetManager.cs" />
     <Compile Include="Sources\AsphyxiaList.cs" />
     <Compile Include="Sources\AsphyxiaImporter.cs" />
+    <Compile Include="Sources\KshBulkImporter.cs" />
+    <Compile Include="Sources\ThumbnailRebuilder.cs" />
     <Compile Include="Sources\IconLoader.cs" />
     <Compile Include="Sources\MixUrlStore.cs" />
     <Compile Include="Sources\MixManifest.cs" />
@@ -292,6 +294,7 @@
     <Compile Include="Sources\Vox\VoxLevelHeader.cs" />
     <Compile Include="Sources\Vox\RadarCalculator.cs" />
     <Compile Include="Sources\Vox\RadarCalibrator.cs" />
+    <Compile Include="Sources\Vox\RadarRecalculator.cs" />
     <Compile Include="Sources\Repair\Manifest.cs" />
     <Compile Include="Sources\Repair\ManifestRecorder.cs" />
     <Compile Include="Sources\Repair\MixRepairer.cs" />

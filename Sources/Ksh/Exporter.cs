@@ -62,6 +62,7 @@ namespace VoxCharger
 
                     var level   = ksh.ToLevelHeader();
                     level.Chart = vox;
+                    level.Radar = RadarCalculator.Calculate(vox, level.Level);
 
                     info.Source = ksh;
                     header.Levels[chart.Key] = charts[chart.Key].Header = level;
@@ -175,6 +176,53 @@ namespace VoxCharger
                 };
             }
 
+            // Once Action has run, everything the export produced is on disk and only the header
+            // metadata is needed for music_db. Drops jacket bitmaps (unmanaged GDI+ memory), chart
+            // data, parsed sources and the temp music copies, so bulk imports don't pile them up.
+            public static void Release(VoxHeader header, Dictionary<Difficulty, ChartInfo> charts)
+            {
+                if (header?.Levels != null)
+                {
+                    foreach (var level in header.Levels.Values)
+                    {
+                        level.Jacket?.Dispose();
+                        level.Jacket = null;
+                        level.Chart  = null;
+                    }
+                }
+
+                if (charts == null)
+                    return;
+
+                foreach (var info in charts.Values)
+                {
+                    info.Header?.Jacket?.Dispose();
+                    if (info.Header != null)
+                        info.Header.Jacket = null;
+
+                    info.Source = null;
+
+                    // Export copies the music into %TEMP% under a random name
+                    if (!string.IsNullOrEmpty(info.MusicFileName) && File.Exists(info.MusicFileName))
+                    {
+                        try { File.Delete(info.MusicFileName); }
+                        catch { /* best effort */ }
+                    }
+                }
+            }
+
+            // Difficulties of one song sometimes differ in spacing or case of the title
+            // ("friends! ~" / "friends!~"), compare without either
+            public static bool IsSameTitle(string a, string b)
+            {
+                return string.Equals(NormalizeTitle(a), NormalizeTitle(b), StringComparison.OrdinalIgnoreCase);
+            }
+
+            public static string NormalizeTitle(string title)
+            {
+                return new string((title ?? string.Empty).Where(c => !char.IsWhiteSpace(c)).ToArray());
+            }
+
             public static Dictionary<Difficulty, ChartInfo> GetCharts(string dir, string title)
             {
                 // Try to locate another difficulty
@@ -187,7 +235,7 @@ namespace VoxCharger
                         chart.Parse(fn);
 
                         // Different chart
-                        if (chart.Title != title)
+                        if (!IsSameTitle(chart.Title, title))
                             continue;
 
                         charts[chart.Difficulty] = new ChartInfo(chart, chart.ToLevelHeader(), fn);

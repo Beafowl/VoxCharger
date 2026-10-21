@@ -33,6 +33,26 @@ namespace VoxCharger
             return WithDecodedSymbols(Title);
         }
 
+        // Music code for file and folder names: lowercase ASCII alphanumerics,
+        // underscored, capped at 16 chars (mirror of the asphyxia plugin's sanitizeAscii).
+        // Returns "custom" when nothing usable is left.
+        public static string ToAscii(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "custom";
+            var chars = new char[text.Length];
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+                chars[i] = ok ? char.ToLowerInvariant(c) : '_';
+            }
+            string s = new string(chars);
+            while (s.Contains("__")) s = s.Replace("__", "_");
+            s = s.Trim('_');
+            if (s.Length > 16) s = s.Substring(0, 16);
+            return s.Length == 0 ? "custom" : s;
+        }
+
         public static string WithDecodedSymbols(string input)
         {
             if (string.IsNullOrEmpty(input))

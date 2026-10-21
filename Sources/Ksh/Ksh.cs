@@ -106,6 +106,13 @@ namespace VoxCharger
             public SoundFxOptions SoundFx { get; set; } = new SoundFxOptions();
             public CameraOptions  Camera  { get; set; } = new CameraOptions();
             public TrackOptions Track     { get; set; } = new TrackOptions();
+
+            // Shallow copy, so per-chart values like LeadInMeasures can be set without
+            // touching options shared between threads (sub options are only read)
+            public ParseOption Clone()
+            {
+                return (ParseOption)MemberwiseClone();
+            }
         }
 
         public Ksh()
@@ -139,6 +146,58 @@ namespace VoxCharger
                 Level       = Level,
                 Radar       = RadarCalculator.Calculate(Events, Level)
             };
+        }
+
+        // Note lines look like "0000|00|--" (BT|FX|lasers, optionally followed by spin data).
+        // Anything else that happens to start with a digit (stray "1" lines exist in the wild)
+        // is ignored, the line parser reads fixed columns up to index 9.
+        private static bool IsNoteLine(string line)
+        {
+            return line.Length >= 10 && char.IsDigit(line[0]) && line[4] == '|' && line[7] == '|';
+        }
+
+        private static readonly string[] AudioExtensions = { ".ogg", ".mp3", ".wav", ".flac", ".m4a" };
+
+        // Packs that went through some download services have their files renamed
+        // (Google Drive turns ' and % into _), while the .ksh still references the
+        // original name. When the referenced file doesn't exist, use the file in the
+        // chart's folder whose name matches ignoring punctuation and case, and for music
+        // fall back to the folder's only audio file. Otherwise the name is kept as-is.
+        private static string ResolveReferencedFile(string kshFile, string name, bool isMusic)
+        {
+            if (string.IsNullOrEmpty(name))
+                return name;
+
+            try
+            {
+                string dir = Path.GetDirectoryName(Path.GetFullPath(kshFile));
+                if (File.Exists(Path.Combine(dir, name)))
+                    return name;
+
+                var files  = Directory.GetFiles(dir);
+                string key = RelaxedFileName(Path.GetFileName(name));
+                var match  = files.Where(f => RelaxedFileName(Path.GetFileName(f)) == key).ToList();
+                if (match.Count == 1)
+                    return Path.GetFileName(match[0]);
+
+                if (isMusic)
+                {
+                    var audio = files.Where(f => AudioExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())).ToList();
+                    if (audio.Count == 1)
+                        return Path.GetFileName(audio[0]);
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // Names with characters invalid in paths can't be looked up, keep the original
+            }
+
+            return name;
+        }
+
+        private static string RelaxedFileName(string name)
+        {
+            return new string(name.Select(c => char.IsLetterOrDigit(c) || c == '.' ? char.ToLowerInvariant(c) : '_').ToArray());
         }
 
         public void Parse(string fileName, ParseOption opt = null)
@@ -278,8 +337,9 @@ namespace VoxCharger
                         case "artist":      Artist         = value; break;
                         case "effect":      Effector       = value; break;
                         case "illustrator": Illustrator    = value; break;
-                        case "jacket":      JacketFileName = value; break;
-                        case "m":           MusicFileName  = value; break;               
+                        case "jacket":      JacketFileName = ResolveReferencedFile(fileName, value, false); break;
+                        // m=main.ogg;main_f.ogg lists the music plus an effected variant, the first one is the music
+                        case "m":           MusicFileName  = ResolveReferencedFile(fileName, param[0].Trim(), true); break;
                         case "po"    when int.TryParse(value, out int po):  PreviewOffset = po;                  break;
                         case "mvol"  when int.TryParse(value, out int vol): Volume        = vol;                 break;
                         case "level" when int.TryParse(value, out int lv):  Level         = lv;                  break;
@@ -648,14 +708,14 @@ namespace VoxCharger
                         string ln = lines[j].Trim();
                         if (!string.IsNullOrEmpty(ln))
                         {
-                            if (char.IsDigit(ln[0]))
+                            if (IsNoteLine(ln))
                                 noteCount++;
                             else if (ln == "--")
                                 break;
                         }
                     }
                 }
-                else if (char.IsDigit(line[0]))
+                else if (IsNoteLine(line))
                 {
                     // Increment offset when current line is event
                     offset++;
@@ -888,7 +948,10 @@ namespace VoxCharger
                                 // Due to terrible ksh format for slam that appear in 1/32 or shorter 
                                 // the output of conversion may have 6 cells gap apart each other
                                 // TODO: Use offset instead of Time.Difference, cuz it might start and finish in different measure
-                                if (start.IsLaserSlam && end.IsLaserSlam && end.Time.Difference(start.Time, timeSig) <= 6)
+                                // Only genuine slams (different offsets) get aligned onto one tick. Two nodes
+                                // at the same offset are a short flat laser (common in 1/64+ charts);
+                                // pulling those together made zero-length segments the game can't play.
+                                if (start.IsLaserSlam && end.IsLaserSlam && start.Offset != end.Offset && end.Time.Difference(start.Time, timeSig) <= 6)
                                 {
                                     // Pull one of the offset
                                     // In some rare cases, not pulling the offset will ended up normal laser instead of slam, especially in slow bpm

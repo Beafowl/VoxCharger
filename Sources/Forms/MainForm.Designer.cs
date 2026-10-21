@@ -72,6 +72,8 @@
             this.S3VFileBuilder = new System.Windows.Forms.MenuItem();
             this.ToolsSeparator1 = new System.Windows.Forms.MenuItem();
             this.RepairMixToolsMenu = new System.Windows.Forms.MenuItem();
+            this.RecomputeRadarToolsMenu = new System.Windows.Forms.MenuItem();
+            this.RebuildThumbnailsToolsMenu = new System.Windows.Forms.MenuItem();
             this.RemoteMixesToolsMenu = new System.Windows.Forms.MenuItem();
             this.HelpMenu = new System.Windows.Forms.MenuItem();
             this.AboutHelpMenu = new System.Windows.Forms.MenuItem();
@@ -349,7 +351,7 @@
             // ToolsMenu
             // 
             this.ToolsMenu.Index = 2;
-            this.ToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ConvertToolsMenu, this.VoxConverterToolsMenu, this.MusicFileBuilder, this.S3VFileBuilder, this.ToolsSeparator1, this.RepairMixToolsMenu, this.RemoteMixesToolsMenu });
+            this.ToolsMenu.MenuItems.AddRange(new System.Windows.Forms.MenuItem[] { this.ConvertToolsMenu, this.VoxConverterToolsMenu, this.MusicFileBuilder, this.S3VFileBuilder, this.ToolsSeparator1, this.RepairMixToolsMenu, this.RecomputeRadarToolsMenu, this.RebuildThumbnailsToolsMenu, this.RemoteMixesToolsMenu });
             this.ToolsMenu.Text = "Tools";
             //
             // ConvertToolsMenu
@@ -409,6 +411,16 @@
             //
             this.RepairMixToolsMenu.Text = "Repair Mix..";
             this.RepairMixToolsMenu.Click += new System.EventHandler(this.OnRepairMixToolsMenuClick);
+            //
+            // RecomputeRadarToolsMenu
+            //
+            this.RecomputeRadarToolsMenu.Text = "Recompute Radar";
+            this.RecomputeRadarToolsMenu.Click += new System.EventHandler(this.OnRecomputeRadarToolsMenuClick);
+            //
+            // RebuildThumbnailsToolsMenu
+            //
+            this.RebuildThumbnailsToolsMenu.Text = "Rebuild Thumbnails";
+            this.RebuildThumbnailsToolsMenu.Click += new System.EventHandler(this.OnRebuildThumbnailsToolsMenuClick);
             //
             // RemoteMixesToolsMenu
             //
@@ -1201,6 +1213,8 @@
         private System.Windows.Forms.MenuItem ImportAsphyxiaMenu;
         private System.Windows.Forms.MenuItem ToolsSeparator1;
         private System.Windows.Forms.MenuItem RepairMixToolsMenu;
+        private System.Windows.Forms.MenuItem RecomputeRadarToolsMenu;
+        private System.Windows.Forms.MenuItem RebuildThumbnailsToolsMenu;
         private System.Windows.Forms.MenuItem RemoteMixesToolsMenu;
     }
 }

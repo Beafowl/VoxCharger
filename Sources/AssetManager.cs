@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Diagnostics;
@@ -117,6 +118,18 @@ namespace VoxCharger
 
         private const string MixSettingsFileName = "voxcharger_mix.json";
         private const int TutorialMusicId = 9001;
+
+        // The game's song select loads a jacket only for ids below the tutorial id (its
+        // CIndividualJacketLoader compares against 9001); higher ids play fine but show the
+        // dummy jacket in the list and the preview.
+        public const int MaxJacketMusicId = 9000;
+
+        // Jacket thumbnail archives of the game build (data/graphics/s_jacketNN.ifs). A mix's
+        // thumbnails are spread over them by music id so ifs_layeredfs keeps each injected
+        // texture small: one 4096x4096 canvas for a whole mix is more than the game takes.
+        private static readonly List<int> _thumbnailArchives = new List<int>();
+
+        public const int ThumbnailSize = 128;
         #endregion
 
         #region --- Mix Management ---
@@ -150,8 +163,30 @@ namespace VoxCharger
                 _mixList.Add(modName);
             }
 
+            // Thumbnail archives shipped with this build, packed (.ifs) or unpacked (_ifs)
+            _thumbnailArchives.Clear();
+            string graphicsPath = Path.Combine(gamePath, @"data\graphics");
+            if (Directory.Exists(graphicsPath))
+            {
+                var entries = Directory.GetFiles(graphicsPath, "s_jacket??.ifs")
+                    .Concat(Directory.GetDirectories(graphicsPath, "s_jacket??_ifs"));
+                foreach (string entry in entries)
+                {
+                    string name = Path.GetFileName(entry);
+                    if (int.TryParse(name.Substring(8, 2), out int archive) && !_thumbnailArchives.Contains(archive))
+                        _thumbnailArchives.Add(archive);
+                }
+                _thumbnailArchives.Sort();
+            }
+
             _lastOriginalId = 0;
             GamePath = gamePath;
+        }
+
+        // Archive a song's thumbnails go into; always 00 when the build's archives are unknown
+        public static int ThumbnailArchive(int musicId)
+        {
+            return _thumbnailArchives.Count == 0 ? 0 : _thumbnailArchives[musicId % _thumbnailArchives.Count];
         }
 
         public static void CreateMix(string mixName)
@@ -205,23 +240,49 @@ namespace VoxCharger
             MixStartId = GetSetting(settings, "startId");
         }
 
-        // Moves every song below startId to the first free ids at or above it.
-        // Ids change in memory right away; the returned actions rename the assets on disk
-        // and must run before the db is saved.
+        // Consecutive ids from startId for every song of the mix, in current id order. Ids of the
+        // game, other mixes and the tutorial are skipped. Returns the songs whose id changes.
+        public static List<(VoxHeader header, int newId)> PlanMixStartId(int startId)
+        {
+            var moves = new List<(VoxHeader header, int newId)>();
+            if (startId <= 0)
+                return moves;
+
+            int next = startId;
+            foreach (var header in Headers.OrderBy(h => h.Id))
+            {
+                while (!ValidateMusicId(next))
+                    next++;
+
+                if (header.Id != next)
+                    moves.Add((header, next));
+                next++;
+            }
+
+            return moves;
+        }
+
+        // Applies PlanMixStartId. Ids change in memory right away; the returned actions rename
+        // the assets on disk and must run before the db is saved, in the returned order: a song
+        // is only moved once no other song still occupies its new id (targets are distinct and
+        // ascending, so there are no cycles and such an order always exists).
         public static List<Action> SetMixStartId(int startId)
         {
             MixStartId = startId;
 
             var actions = new List<Action>();
-            if (startId <= 0)
-                return actions;
-
-            foreach (var header in Headers.Where(h => h.Id < startId).OrderBy(h => h.Id).ToList())
+            var pending = PlanMixStartId(startId);
+            while (pending.Count > 0)
             {
-                int oldId    = header.Id;
-                int newId    = GetFreeMusicId(startId);
-                string ascii = header.Ascii;
+                int index = pending.FindIndex(m => !pending.Any(o => o.header != m.header && o.header.Id == m.newId));
+                if (index < 0)
+                    index = 0;
 
+                var (header, newId) = pending[index];
+                pending.RemoveAt(index);
+
+                int oldId    = header.Id;
+                string ascii = header.Ascii;
                 Headers.ChangeId(header, newId);
                 actions.Add(() => RenameMusicAssets(oldId, newId, ascii));
             }
@@ -400,23 +461,35 @@ namespace VoxCharger
 
         public static void ImportJacket(VoxHeader header, Difficulty diff, Image image)
         {
-            // Texture Small
-            Image texSmall = new Bitmap(image, new Size(130, 130));
-            texSmall.Save($"{GetThumbnailJacketPath(header, diff)}.png", ImageFormat.Png);
-            texSmall.Dispose();
-            texSmall = new Bitmap(image, new Size(108, 108));
-            texSmall.Save($"{GetJacketPath(header, diff)}_s.png", ImageFormat.Png);
-            texSmall.Dispose();
+            // Song select thumbnail, 128x128 like the stock jacket archives. It lives under
+            // graphics/ where ifs_layeredfs injects it into the game's s_jacketNN.ifs texture.
+            SaveJacket(image, ThumbnailSize, $"{GetThumbnailJacketPath(header, diff)}.png");
 
-            // Texture Big
-            Image texBig = new Bitmap(image, new Size(676, 676));
-            texBig.Save($"{GetJacketPath(header, diff)}_b.png", ImageFormat.Png);
-            texBig.Dispose();
+            // Sizes the game reads straight from the music folder
+            SaveJacket(image, 108, $"{GetJacketPath(header, diff)}_s.png");
+            SaveJacket(image, 676, $"{GetJacketPath(header, diff)}_b.png");
+            SaveJacket(image, 300, $"{GetJacketPath(header, diff)}.png");
+        }
 
-            // Texture Normal
-            Image texNormal = new Bitmap(image, new Size(300, 300));
-            texNormal.Save($"{GetJacketPath(header, diff)}.png", ImageFormat.Png);
-            texNormal.Dispose();
+        public static void SaveJacket(Image image, int size, string path)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            using (var resized = ResizeJacket(image, size))
+                resized.Save(path, ImageFormat.Png);
+        }
+
+        public static Bitmap ResizeJacket(Image image, int size)
+        {
+            var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.SmoothingMode     = SmoothingMode.HighQuality;
+                graphics.PixelOffsetMode   = PixelOffsetMode.HighQuality;
+                graphics.CompositingMode   = CompositingMode.SourceCopy;
+                graphics.DrawImage(image, new Rectangle(0, 0, size, size));
+            }
+            return bitmap;
         }
 
 
@@ -450,17 +523,22 @@ namespace VoxCharger
             if (Directory.Exists(musicPath))
                 Directory.Delete(musicPath, true);
 
-            string jacketPath = Path.Combine(
-                MixPath,
-                $"graphics\\s_jacket00_ifs\\"
-            );
+            foreach (string jacket in FindThumbnails(header.Id))
+                File.Delete(jacket);
+        }
 
-            string pattern = $"jk_{header.Id:D4}*";
-            foreach (string jacket in Directory.GetFiles(jacketPath, pattern))
-            {
-                if (File.Exists(jacket))
-                    File.Delete(jacket);
-            }
+        // Every thumbnail of a song, whichever archive folder it is in (older mixes kept them all in 00)
+        public static List<string> FindThumbnails(int musicId)
+        {
+            var files = new List<string>();
+            string graphicsDir = Path.Combine(MixPath, "graphics");
+            if (!Directory.Exists(graphicsDir))
+                return files;
+
+            foreach (string dir in Directory.GetDirectories(graphicsDir, "s_jacket*_ifs"))
+                files.AddRange(Directory.GetFiles(dir, $"jk_{musicId:D4}_*"));
+
+            return files;
         }
         #endregion
 
@@ -471,7 +549,9 @@ namespace VoxCharger
             // This could be waste to those gaps, and eat up our precious limited id
             // However, these gaps may indicate deleted song, which should be taken by omnimix
 
-            return GetFreeMusicId(Math.Max(_internalHeaders.LastId + 1, MixStartId));
+            // With a starting id the mix numbers from there (ids in use by the game, other mixes
+            // or this mix are skipped); without one, continue after the highest id anywhere
+            return GetFreeMusicId(MixStartId > 0 ? MixStartId : _internalHeaders.LastId + 1);
         }
 
         // First id at or above `from` that no other mix, the game or this mix uses
@@ -528,14 +608,12 @@ namespace VoxCharger
                 }
             }
 
-            string graphicsDir = Path.Combine(MixPath, "graphics");
-            if (Directory.Exists(graphicsDir))
+            // Thumbnails follow the id into the archive folder of the new id
+            string thumbnailDir = Path.GetDirectoryName(GetThumbnailJacketPath(newId, 1));
+            foreach (string file in FindThumbnails(oldId))
             {
-                foreach (string dir in Directory.GetDirectories(graphicsDir, "s_jacket*_ifs"))
-                {
-                    foreach (string file in Directory.GetFiles(dir, $"{oldJacket}*"))
-                        File.Move(file, Path.Combine(dir, rename(Path.GetFileName(file))));
-                }
+                Directory.CreateDirectory(thumbnailDir);
+                File.Move(file, Path.Combine(thumbnailDir, rename(Path.GetFileName(file))));
             }
 
             MixUrlStore.RenameUrl(MixPath, oldId, newId);
@@ -546,10 +624,16 @@ namespace VoxCharger
                 manifest.Charts.Remove(oldId.ToString(CultureInfo.InvariantCulture));
                 entry.Id       = newId;
                 entry.CodeName = newCode;
-                entry.Outputs  = entry.Outputs.ToDictionary(
-                    output => output.Key.Replace(oldCode, newCode).Replace(oldJacket, newJacket),
-                    output => output.Value
-                );
+
+                var outputs = new Dictionary<string, string>();
+                foreach (var output in entry.Outputs)
+                {
+                    string key = output.Key.Replace(oldCode, newCode).Replace(oldJacket, newJacket);
+                    if (key.StartsWith("graphics/", StringComparison.OrdinalIgnoreCase))
+                        key = $"graphics/s_jacket{ThumbnailArchive(newId):D2}_ifs/{key.Substring(key.LastIndexOf('/') + 1)}";
+                    outputs[key] = output.Value;
+                }
+                entry.Outputs = outputs;
 
                 manifest.Charts[newId.ToString(CultureInfo.InvariantCulture)] = entry;
                 manifest.Save(MixPath);
@@ -627,26 +711,17 @@ namespace VoxCharger
             if (difficulty == Difficulty.Infinite && header.InfVersion == InfiniteVersion.Mxm)
                 index = 5;
 
-            string thumbnailDir = "s_jacket00_ifs";
-            string graphicsDir  = Path.Combine(MixPath, @"graphics\");
+            return GetThumbnailJacketPath(header.Id, index);
+        }
 
-            if (Directory.Exists(graphicsDir))
-            {
-                foreach (string dir in Directory.GetDirectories(graphicsDir))
-                {
-                    string name = new DirectoryInfo(dir).Name;
-                    if (name.StartsWith("s_jacket") && name.EndsWith("_ifs"))
-                    {
-                        thumbnailDir = name;
-                        break;
-                    }
-                }
-            }
-
+        // graphics/s_jacketNN_ifs/jk_<id>_<index>_t, NN chosen by id (see ThumbnailArchive)
+        public static string GetThumbnailJacketPath(int musicId, int index)
+        {
             return Path.Combine(
-                graphicsDir,
-                $"{thumbnailDir}\\",
-                $"jk_{header.Id:D4}_{index}_t"
+                MixPath,
+                "graphics",
+                $"s_jacket{ThumbnailArchive(musicId):D2}_ifs",
+                $"jk_{musicId:D4}_{index}_t"
             );
         }
 

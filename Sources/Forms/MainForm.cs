@@ -266,7 +266,7 @@ namespace VoxCharger
 
         private void OnMixStartIdFileMenuClick(object sender, EventArgs e)
         {
-            using (var prompt = new InputForm("Starting ID", "Lowest music ID for songs in this mix (0 = no limit):", AssetManager.MixStartId.ToString()))
+            using (var prompt = new InputForm("Starting ID", "Renumber all songs of this mix consecutively from this ID (0 = keep the IDs as they are):", AssetManager.MixStartId.ToString()))
             {
                 if (prompt.ShowDialog() != DialogResult.OK)
                     return;
@@ -283,14 +283,26 @@ namespace VoxCharger
                     return;
                 }
 
-                if (startId == AssetManager.MixStartId)
-                    return;
+                int lastId = startId > 0 ? startId + Math.Max(0, AssetManager.Headers.Count - 1) : 0;
+                if (lastId > AssetManager.MaxJacketMusicId)
+                {
+                    var limit = MessageBox.Show(
+                        $"The game shows no jacket at song select for IDs above {AssetManager.MaxJacketMusicId} (its jacket loader stops at the tutorial ID 9001); the songs still play.\n\n" +
+                        $"Numbering from {startId} puts songs up to about {lastId}. Continue anyway?",
+                        "Starting ID",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning
+                    );
 
-                int below = startId > 0 ? AssetManager.Headers.Count(h => h.Id < startId) : 0;
-                if (below > 0)
+                    if (limit != DialogResult.Yes)
+                        return;
+                }
+
+                var moves = AssetManager.PlanMixStartId(startId);
+                if (moves.Count > 0)
                 {
                     var response = MessageBox.Show(
-                        $"{below} song(s) in this mix have an ID below {startId} and will be moved to the next free IDs from {startId} on.\n\n" +
+                        $"{moves.Count} of {AssetManager.Headers.Count} song(s) get a new ID so the mix is numbered consecutively from {startId} on.\n\n" +
                         "Their files are renamed when you save the mix. Continue?",
                         "Starting ID",
                         MessageBoxButtons.YesNo,
@@ -304,10 +316,23 @@ namespace VoxCharger
                 foreach (var action in AssetManager.SetMixStartId(startId))
                     QueueAction("Renumber", action);
 
-                _pristine = false;
+                if (moves.Count > 0)
+                    _pristine = false;
+
                 ApplyCurrentSort();
                 if (MusicListBox.SelectedItem is VoxHeader header)
                     IdTextBox.Text = header.Id.ToString();
+
+                string summary;
+                if (startId <= 0)
+                    summary = $"Starting ID removed. New songs continue after the highest ID in use ({AssetManager.GetNextMusicId()}).";
+                else if (AssetManager.Headers.Count == 0)
+                    summary = $"Starting ID set to {startId}. Imported songs will be numbered from {AssetManager.GetNextMusicId()} on.";
+                else
+                    summary = $"Songs are numbered {AssetManager.Headers.Min(h => h.Id)}..{AssetManager.Headers.Max(h => h.Id)}; new songs continue from {AssetManager.GetNextMusicId()}." +
+                              (moves.Count > 0 ? "\nSave the mix to rename the files." : string.Empty);
+
+                MessageBox.Show(summary, "Starting ID", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
 
@@ -564,20 +589,22 @@ namespace VoxCharger
 
                     foreach (var header in converter.ResultSet)
                     {
-                        if (!_actions.ContainsKey(header.Ascii))
-                            _actions[header.Ascii] = new Queue<Action>();
                         AssetManager.Headers.Add(header);
-                        MusicListBox.Items.Add(header);
-                        _actions[header.Ascii].Enqueue(converter.ActionSet[header.Ascii]);
 
-                        // Re-key the URL by the music id BulkImporter chose.
-                        if (asciiToUrl.TryGetValue(header.Ascii, out string url))
+                        // Re-key the URL by the music id BulkImporter chose. The music code is
+                        // sanitized from the folder name, so match on the folder itself.
+                        if (converter.SourceFolders.TryGetValue(header, out string folder) &&
+                            asciiToUrl.TryGetValue(Path.GetFileName(folder), out string url))
+                        {
                             MixUrlStore.SetUrl(AssetManager.MixPath, header.Id, url);
+                        }
+
                         imported++;
                     }
+
+                    // Bulk import already wrote the assets, save so the db matches what's on disk
                     ApplyCurrentSort();
-                    _pristine = false;
-                    if (_autosave)
+                    if (imported > 0)
                         Save(AssetManager.MdbFilename);
                 }
 
@@ -664,8 +691,10 @@ namespace VoxCharger
             var confirm = MessageBox.Show(
                 $"Found {importable.Count} importable chart(s) ({skipped} skipped).\n\n" +
                 "VoxCharger will download each chart from ksm.dev and import it " +
-                "with the server-assigned music id preserved. Existing entries at " +
-                "the same id will be replaced.\n\nProceed?",
+                (AssetManager.MixStartId > 0
+                    ? $"numbered consecutively from {AssetManager.MixStartId} on (the list's ids only set the order). "
+                    : "with the server-assigned music id preserved. ") +
+                "Existing entries at the same id will be replaced.\n\nProceed?",
                 "Import Asphyxia list",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question
@@ -720,6 +749,23 @@ namespace VoxCharger
             _pristine = true;
 
             ShowImportSummary("Import Asphyxia list", result.Imported, result.Errors);
+            WarnJacketLimit();
+        }
+
+        // Song select shows the dummy jacket for ids above AssetManager.MaxJacketMusicId
+        private void WarnJacketLimit()
+        {
+            int above = AssetManager.Headers.Count(h => h.Id > AssetManager.MaxJacketMusicId);
+            if (above == 0)
+                return;
+
+            MessageBox.Show(
+                $"{above} song(s) in this mix have an ID above {AssetManager.MaxJacketMusicId}. They play, but the game shows no jacket for them at song select " +
+                "(its jacket loader stops at the tutorial ID 9001). Use File > Set Starting ID to move the mix below that.",
+                "Jacket limit",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning
+            );
         }
 
         // True when the currently-selected chart has a ksm.dev URL recorded
@@ -1176,6 +1222,94 @@ namespace VoxCharger
             }
         }
 
+        private void OnRebuildThumbnailsToolsMenuClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(AssetManager.MixName))
+            {
+                MessageBox.Show(this, "No mix is loaded. Open or create a mix first.", "Rebuild Thumbnails",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            ThumbnailRebuilder.Result result = null;
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog =>
+                {
+                    try
+                    {
+                        result = ThumbnailRebuilder.Run(new AsphyxiaImporter.Progress
+                        {
+                            Status  = s => dialog.SetStatus(s),
+                            Percent = p => dialog.SetProgress(p),
+                        });
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                });
+                loader.ShowDialog();
+            }
+
+            if (result == null)
+                return;
+
+            string errors = result.Errors.Count > 0 ? "\n\n" + string.Join("\n", result.Errors.Take(20)) : string.Empty;
+            MessageBox.Show(
+                $"{result.Rebuilt} thumbnail(s) rebuilt, {result.Removed} stale file(s) removed, {result.Missing} chart(s) without jacket, {result.Errors.Count} error(s).\n\n" +
+                $"Delete data_mods\\_cache\\graphics on the game PC so ifs_layeredfs picks up the new layout.{errors}",
+                "Rebuild Thumbnails",
+                MessageBoxButtons.OK,
+                result.Errors.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information
+            );
+        }
+
+        private void OnRecomputeRadarToolsMenuClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(AssetManager.MixName))
+            {
+                MessageBox.Show(this, "No mix is loaded. Open or create a mix first.", "Recompute Radar",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            RadarRecalculator.Result result = null;
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog =>
+                {
+                    try
+                    {
+                        result = RadarRecalculator.Run(new AsphyxiaImporter.Progress
+                        {
+                            Status  = s => dialog.SetStatus(s),
+                            Percent = p => dialog.SetProgress(p),
+                        });
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                });
+                loader.ShowDialog();
+            }
+
+            if (result == null)
+                return;
+
+            if (result.Updated > 0)
+                Save(AssetManager.MdbFilename);
+
+            string errors = result.Errors.Count > 0 ? "\n\n" + string.Join("\n", result.Errors.Take(20)) : string.Empty;
+            MessageBox.Show(
+                $"Radar recomputed for {result.Updated} chart(s), {result.Missing} without chart file, {result.Errors.Count} error(s).{errors}",
+                "Recompute Radar",
+                MessageBoxButtons.OK,
+                result.Errors.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information
+            );
+        }
+
         private void OnRepairMixToolsMenuClick(object sender, EventArgs e)
         {
             if (string.IsNullOrEmpty(AssetManager.MixPath))
@@ -1484,20 +1618,21 @@ namespace VoxCharger
                         return;
 
                     foreach (var header in converter.ResultSet)
-                    {
-                        if (!_actions.ContainsKey(header.Ascii))
-                            _actions[header.Ascii] = new Queue<Action>();
-
                         AssetManager.Headers.Add(header);
-                        MusicListBox.Items.Add(header);
 
-                        _actions[header.Ascii].Enqueue(converter.ActionSet[header.Ascii]);
-                    }
-
+                    // Bulk import already wrote the assets, save so the db matches what's on disk
                     ApplyCurrentSort();
-                    _pristine = false;
-                    if (_autosave)
+                    if (converter.ResultSet.Length > 0)
                         Save(AssetManager.MdbFilename);
+
+                    string skipped = converter.SkippedCount > 0 ? $", {converter.SkippedCount} skipped (already in this mix)" : string.Empty;
+                    MessageBox.Show(
+                        $"{converter.ResultSet.Length} song(s) imported{skipped}.",
+                        "Bulk Import",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+                    WarnJacketLimit();
                 }
             }
         }
