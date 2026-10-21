@@ -61,10 +61,7 @@ namespace VoxCharger
                 int leadInMs = 0;
                 if (firstEventMs < AutoLeadInMinMs && !double.IsPositiveInfinity(firstEventMs))
                 {
-                    var sig = ksh.Events.GetTimeSignature(Time.Initial);
-                    int sigBeat = sig != null ? sig.Beat : 4;
-                    float bpm = ksh.InitialBpm > 0 ? ksh.InitialBpm : 120f;
-                    double measureMs = sigBeat * 60000.0 / bpm;
+                    double measureMs = ksh.Events.MeasureLength(1) * MsPerTick(ksh.SafeInitialBpm);
                     int needMs = AutoLeadInMinMs - (int)firstEventMs;
                     measuresShifted = (int)System.Math.Ceiling(needMs / measureMs);
                     if (measuresShifted < 1) measuresShifted = 1;
@@ -93,19 +90,11 @@ namespace VoxCharger
             return measuresShifted;
         }
 
-        // ms per chart-tick at the given BPM and time signature.
-        //   192 ticks span one measure
-        //   one measure = signature.beat * (60 / bpm) seconds
-        // so one tick = signature.beat * 60000 / (192 * bpm) milliseconds.
-        // Both BPM and signature matter — a 3/4 measure at the same BPM is
-        // shorter than a 4/4 measure, so each of its 192 ticks is shorter
-        // too. Keep this as a pure helper so callers don't have to remember
-        // which factors apply.
-        private static double MsPerTick(float bpm, int sigBeat)
+        // ms per real tick (1/48 quarter note) at the given BPM
+        private static double MsPerTick(float bpm)
         {
             if (bpm <= 0) bpm = 120f;
-            if (sigBeat <= 0) sigBeat = 4;
-            return sigBeat * 60000.0 / (192.0 * bpm);
+            return 60000.0 / (48.0 * bpm);
         }
 
         // Initial BPM with safe fallback. KSH parser sets InitialBpm on the
@@ -130,50 +119,59 @@ namespace VoxCharger
             foreach (var ev in Events)
             {
                 if (!IsGameplayEvent(ev)) continue;
-                var sig = Events.GetTimeSignature(ev.Time);
-                int tick = ev.Time.GetAbsoluteOffset((sig.Beat, sig.Note));
+                int tick = Events.ToTicks(ev.Time);
                 if (tick < firstTick) firstTick = tick;
             }
             if (firstTick == int.MaxValue) return double.PositiveInfinity;
 
-            // Use initial BPM/signature — the first note is virtually always
-            // before any BPM change, so this is exact in practice.
-            var initSig = InitialSignatureTuple();
-            return firstTick * MsPerTick(SafeInitialBpm, initSig.beat);
+            return SecondsAtTick(firstTick) * 1000.0;
         }
 
-        // Time of the LAST event of any kind in ms, walking BPM / signature
-        // changes properly so a chart that accelerates / decelerates lands
-        // on the right total duration.
+        // Time of the LAST event of any kind in ms, walking BPM changes
+        // properly so a chart that accelerates / decelerates lands on the
+        // right total duration.
         public double GetLastEventMs()
         {
-            // Snapshot each event's absolute tick under the signature
-            // active at its position, then sort.
-            var sortedByTick = Events
-                .Select(e =>
-                {
-                    var sig = Events.GetTimeSignature(e.Time);
-                    int tick = e.Time.GetAbsoluteOffset((sig.Beat, sig.Note));
-                    return (ev: e, tick);
-                })
-                .OrderBy(x => x.tick)
-                .ToList();
-            if (sortedByTick.Count == 0) return 0;
-
-            double elapsedMs = 0;
-            int prevTick = 0;
-            float currentBpm = SafeInitialBpm;
-            var currentSig = InitialSignatureTuple();
-
-            foreach (var (ev, tick) in sortedByTick)
+            int lastTick = 0;
+            foreach (var ev in Events)
             {
-                int delta = tick - prevTick;
-                if (delta > 0) elapsedMs += delta * MsPerTick(currentBpm, currentSig.beat);
-                if (ev is Event.Bpm bpm) currentBpm = bpm.Value;
-                else if (ev is Event.TimeSignature sig) currentSig = (sig.Beat, sig.Note);
-                prevTick = tick;
+                int tick = Events.ToTicks(ev.Time);
+                if (ev is Event.Button button)
+                    tick += Math.Max(0, button.HoldLength);
+                else if (ev is Camera camera)
+                    tick += Math.Max(0, camera.Duration);
+
+                if (tick > lastTick) lastTick = tick;
             }
-            return elapsedMs;
+            return SecondsAtTick(lastTick) * 1000.0;
+        }
+
+        // Seconds from the chart start to a tick, integrating the BPM changes
+        private double SecondsAtTick(int tick)
+        {
+            var bpms = Events.OfType<Event.Bpm>()
+                .Select(b => (tick: Events.ToTicks(b.Time), bpm: b.Value))
+                .Where(b => b.bpm > 0)
+                .OrderBy(b => b.tick)
+                .ToList();
+
+            double seconds = 0;
+            int    prevTick = 0;
+            float  bpm      = SafeInitialBpm;
+            foreach (var change in bpms)
+            {
+                if (change.tick >= tick)
+                    break;
+
+                if (change.tick > prevTick)
+                    seconds += (change.tick - prevTick) * MsPerTick(bpm) / 1000.0;
+
+                prevTick = Math.Max(prevTick, change.tick);
+                bpm      = change.bpm;
+            }
+
+            seconds += (tick - prevTick) * MsPerTick(bpm) / 1000.0;
+            return seconds;
         }
 
         // Buttons and lasers are the user-facing gameplay events. Slams are
@@ -184,10 +182,9 @@ namespace VoxCharger
         }
 
         // Shift every event in the chart forward by `measures` measures
-        // (192 ticks per measure regardless of signature, keeping all beat
-        // alignment intact). Inserts copies of the initial BPM and
-        // TimeSignature events at (1,1,0) so the new lead-in plays at the
-        // correct musical state.
+        // (keeping all beat alignment intact). Inserts copies of the initial
+        // BPM and TimeSignature events at (1,1,0) so the new lead-in plays
+        // at the correct musical state.
         //
         // Returns the equivalent shift in milliseconds, computed under the
         // initial BPM/signature — the audio side needs the same offset
@@ -199,18 +196,18 @@ namespace VoxCharger
             // Capture the initial state before mutating.
             float initBpmValue = SafeInitialBpm;
             var initSigTuple = InitialSignatureTuple();
-            var initialBpmEvent = Events.OfType<Event.Bpm>().OrderBy(e =>
-                e.Time.GetAbsoluteOffset((Events.GetTimeSignature(e.Time).Beat, Events.GetTimeSignature(e.Time).Note))
-            ).FirstOrDefault();
-            var initialSigEvent = Events.OfType<Event.TimeSignature>().OrderBy(e =>
-                e.Time.GetAbsoluteOffset((e.Beat, e.Note))
-            ).FirstOrDefault();
+            int leadInTicks  = measures * Time.CellsPerMeasure(initSigTuple);
+            var initialBpmEvent = Events.OfType<Event.Bpm>().OrderBy(e => Events.ToTicks(e.Time)).FirstOrDefault();
+            var initialSigEvent = Events.OfType<Event.TimeSignature>().OrderBy(e => e.Time.Measure).FirstOrDefault();
 
             // Shift everything by `measures` measures. Time.Measure is just
             // an int, so this is a clean offset — no tick math needed.
-            foreach (var ev in Events)
+            var shifted = new List<Event>(Events);
+            Events.Clear();
+            foreach (var ev in shifted)
             {
                 ev.Time.Measure += measures;
+                Events.Add(ev);
             }
             MeasureCount += measures;
 
@@ -222,10 +219,9 @@ namespace VoxCharger
             if (initialSigEvent != null)
                 Events.Add(new Event.TimeSignature(Time.Initial, initSigTuple.beat, initSigTuple.note));
 
-            // Convert the shift to ms under the initial BPM/sig — the audio
+            // Convert the shift to ms under the initial BPM — the audio
             // pipeline uses this to prepend the matching silence.
-            int shiftedTicks = measures * 192;
-            return (int)Math.Round(shiftedTicks * MsPerTick(initBpmValue, initSigTuple.beat));
+            return (int)Math.Round(leadInTicks * MsPerTick(initBpmValue));
         }
     }
 }

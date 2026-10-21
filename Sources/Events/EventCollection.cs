@@ -26,7 +26,14 @@ namespace VoxCharger
         public Event[] this[Time time]
         {
             get => _events.FindAll((ev) => ev.Time == time).ToArray();
-            set => _events.AddRange(value.Where(ev => ev != null).Select(ev => { ev.Time = time; return ev; }));
+            set
+            {
+                foreach (var ev in value.Where(e => e != null))
+                {
+                    ev.Time = time;
+                    Add(ev);
+                }
+            }
         }
 
         public Event.TimeSignature GetTimeSignature(int measure)
@@ -70,19 +77,143 @@ namespace VoxCharger
 
         public void Add(Event ev)
         {
-            if (ev != null)
-                _events.Add(ev);
+            if (ev == null)
+                return;
+
+            _events.Add(ev);
+            if (ev is Event.TimeSignature)
+                _segments = null;
         }
 
         public void Add(params Event[] ev)
         {
-            _events.AddRange(new List<Event>(ev).FindAll(e => e != null));
+            foreach (var e in ev)
+                Add(e);
         }
 
         public bool Remove(Event ev)
         {
+            if (ev is Event.TimeSignature)
+                _segments = null;
+
             return _events.Remove(ev);
         }
+
+        #region --- Real tick positions ---
+
+        // Signature segments: from `startMeasure` on, each measure has `cellsPerMeasure` cells and
+        // starts at `startTick + (measure - startMeasure) * cellsPerMeasure`
+        private struct Segment
+        {
+            public int StartMeasure;
+            public int StartTick;
+            public int CellsPerBeat;
+            public int CellsPerMeasure;
+        }
+
+        private List<Segment> _segments;
+
+        private List<Segment> Segments
+        {
+            get
+            {
+                if (_segments != null)
+                    return _segments;
+
+                var segments = new List<Segment>();
+                var signatures = _events.OfType<Event.TimeSignature>()
+                    .Where(s => s.Beat > 0 && s.Note > 0)
+                    .OrderBy(s => s.Time.Measure)
+                    .ToList();
+
+                var first = new Segment { StartMeasure = 1, StartTick = 0, CellsPerBeat = 48, CellsPerMeasure = 192 };
+                segments.Add(first);
+                foreach (var sig in signatures)
+                {
+                    int measure = Math.Max(1, sig.Time.Measure);
+                    var last    = segments[segments.Count - 1];
+                    var next    = new Segment
+                    {
+                        StartMeasure    = measure,
+                        CellsPerBeat    = Time.CellsPerBeat((sig.Beat, sig.Note)),
+                        CellsPerMeasure = Time.CellsPerMeasure((sig.Beat, sig.Note)),
+                    };
+
+                    if (measure == last.StartMeasure)
+                    {
+                        // Same measure: the later definition wins
+                        next.StartTick = last.StartTick;
+                        segments[segments.Count - 1] = next;
+                    }
+                    else
+                    {
+                        next.StartTick = last.StartTick + (measure - last.StartMeasure) * last.CellsPerMeasure;
+                        segments.Add(next);
+                    }
+                }
+
+                _segments = segments;
+                return segments;
+            }
+        }
+
+        private Segment SegmentOfMeasure(int measure)
+        {
+            var segments = Segments;
+            var result   = segments[0];
+            foreach (var s in segments)
+            {
+                if (s.StartMeasure > measure)
+                    break;
+
+                result = s;
+            }
+
+            return result;
+        }
+
+        // Tick (1/48 quarter note) at which a measure starts, honouring every signature change
+        public int MeasureStartTick(int measure)
+        {
+            measure = Math.Max(1, measure);
+            var s   = SegmentOfMeasure(measure);
+            return s.StartTick + (measure - s.StartMeasure) * s.CellsPerMeasure;
+        }
+
+        // Real ticks from the chart start for a VOX position
+        public int ToTicks(Time time)
+        {
+            int measure = Math.Max(1, time.Measure);
+            var s       = SegmentOfMeasure(measure);
+            return MeasureStartTick(measure) + (time.Beat - 1) * s.CellsPerBeat + time.Offset;
+        }
+
+        // VOX position for real ticks from the chart start
+        public Time FromTicks(int ticks)
+        {
+            ticks = Math.Max(0, ticks);
+            var segments = Segments;
+            var s = segments[0];
+            foreach (var candidate in segments)
+            {
+                if (candidate.StartTick > ticks)
+                    break;
+
+                s = candidate;
+            }
+
+            int measure = s.StartMeasure + (ticks - s.StartTick) / s.CellsPerMeasure;
+            int rest    = (ticks - s.StartTick) % s.CellsPerMeasure;
+            return new Time(measure, rest / s.CellsPerBeat + 1, rest % s.CellsPerBeat);
+        }
+
+        // Real tick length of one measure
+        public int MeasureLength(int measure)
+        {
+            return SegmentOfMeasure(Math.Max(1, measure)).CellsPerMeasure;
+        }
+
+        #endregion
 
         public bool Contains(Event ev)
         {
@@ -97,6 +228,7 @@ namespace VoxCharger
         public void Clear()
         {
             _events.Clear();
+            _segments = null;
         }
 
         public IEnumerator<Event> GetEnumerator()

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -41,14 +42,11 @@ namespace VoxCharger
 
         public class ParseOption
         {
-            // After parsing, thin laser density where it exceeds what the
-            // SDVX engine handles reliably. Custom charts occasionally ship
-            // with thousands of slams / laser events packed into a few beats;
-            // the player's internal tick counter drifts out of sync with
-            // audio after such a cluster and the rest of the chart plays
-            // wrong. True = enforce caps (default); false = pass KSH through
-            // untouched.
-            public bool SanitizeLasers { get; set; } = true;
+            // After parsing, thin laser density beyond the caps below. Off by default: the
+            // game's own charts carry up to 128 laser positions per measure, so the caps
+            // remove real points (and slams). Kept for charts whose dense laser clusters
+            // desynchronise the player.
+            public bool SanitizeLasers { get; set; } = false;
 
             // Max total laser events (Start + Tick + End) per track per
             // measure. 32 is in line with the densest official charts.
@@ -212,19 +210,27 @@ namespace VoxCharger
             var time       = Time.Initial;
             var signature  = new Event.TimeSignature(time, 4, 4);
             var filter     = Event.LaserFilter.Peak;
-            int rangeLeft  = 0;
-            int rangeRight = 0;
             var cameras    = new Dictionary<Camera.WorkType, Camera>();
             var hitFx      = new Dictionary<Event.ButtonTrack, KshSoundEffect>();
             var holdFx     = new Dictionary<Event.ButtonTrack, Effect>();
             var longNotes  = new Dictionary<Event.ButtonTrack, Event.Button>();
             var lasers     = new Dictionary<Event.LaserTrack, List<Event.Laser>>();
+            var fxTable    = new List<Effect>();                       // FXBUTTON EFFECT INFO pairs in id order
+            var stopEnds   = new HashSet<Event.Bpm>();                 // BPM rows that end a stop
+            var pendingStops = new List<(Event.Bpm start, int ticks)>(); // stop ends are placed after parsing
+            var explicitBpm = new HashSet<Event.Bpm>();                // BPM rows set by a t= line
+            var tiltSeries = new List<Camera.Tilt>();                  // rows of the open manual tilt series
+            Camera.Tilt zeroHold = null;                               // open tilt=zero hold
+            bool laneHidden = false;
+
+            // laserrange_l/r: pending for the next section, and the range of the running section
+            var pendingRange = new Dictionary<Event.LaserTrack, int> { { Event.LaserTrack.Left, 1 }, { Event.LaserTrack.Right, 1 } };
+            var sectionRange = new Dictionary<Event.LaserTrack, int> { { Event.LaserTrack.Left, 1 }, { Event.LaserTrack.Right, 1 } };
 
             int offset    = 0;
             int measure   = 0;
 
             int measureCount = lines.Count(l => l.Trim() == "--");
-            int fxCount   = 1;
             int noteCount = 0;
 
             // Pre-scan for user-defined FX declarations (#define_fx <name> <params>)
@@ -373,10 +379,21 @@ namespace VoxCharger
                                 if (BpmMax == 0f || t > BpmMax)
                                     BpmMax = t;
 
-                                if (!value.Contains("-") && Events.GetBpm(new Time(time.Measure, time.Beat, 0))?.Value != t)
+                                if (!value.Contains("-"))
                                 {
-                                    var bpm = new Event.Bpm(new Time(time.Measure, time.Beat, 0), t); // beat still acceptable
-                                    Events.Add(bpm);
+                                    // BPM changes keep their exact position, stock charts place them on any cell
+                                    var existing = Events[time].OfType<Event.Bpm>().LastOrDefault();
+                                    if (existing != null)
+                                    {
+                                        existing.Value = t;
+                                        explicitBpm.Add(existing);
+                                    }
+                                    else if (Events.GetBpm(time)?.Value != t)
+                                    {
+                                        var change = new Event.Bpm(time, t);
+                                        Events.Add(change);
+                                        explicitBpm.Add(change);
+                                    }
 
                                     // Capture the first explicit single-value BPM as the initial BPM
                                     // for offset-to-ticks conversion.
@@ -390,19 +407,15 @@ namespace VoxCharger
                                 Debug.WriteLine($"[KSH] BPM change with unaligned music offset");
 
                             break;
-                        case "stop" when float.TryParse(value, out float duration):
-                            Event.Bpm start = null;
-                            time = new Time(time.Measure, time.Beat, 0);
-                            foreach (var ev in Events[time])
-                            {
-                                if (ev is Event.Bpm x)
-                                {
-                                    start = x;
-                                    start.IsStop = true;
-                                    break;
-                                }
-                            }
+                        case "stop" when float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float duration):
+                        {
+                            // One KSH stop unit is 1/192 whole note, i.e. one cell. The pause starts on the
+                            // exact line position and the game keeps its note timing (scroll stop only).
+                            int stopTicks = (int)Math.Round(duration);
+                            if (stopTicks <= 0)
+                                break;
 
+                            var start = Events[time].OfType<Event.Bpm>().LastOrDefault();
                             if (start == null)
                             {
                                 var last = Events.GetBpm(time);
@@ -410,61 +423,24 @@ namespace VoxCharger
                                     break;
 
                                 start = new Event.Bpm(time, last.Value);
-                                start.IsStop = true;
                                 Events.Add(start);
                             }
-
-                            Event.Bpm end = null;
-                            // Stop-end target is `duration` ticks after `time` (one tick =
-                            // 1/192 whole note = 1/48 quarter note). The old code used
-                            // Time.FromOffset(duration, signature), which treats its arg as
-                            // an *absolute* position from chart start — so every stop-end
-                            // landed near measure 0 and the halt never released until the
-                            // next unrelated non-stop BPM change. Time.Add is also not
-                            // suitable here: it internally assumes "192 ticks per measure"
-                            // which only holds for 4/4; on 50/4 measures like the ones in
-                            // 'And Revive The Melody' MXM it produces 6+ beats of offset
-                            // for a 24-tick stop. Compute the offset directly from raw
-                            // tick math so it's time-signature-agnostic.
-                            int   stopDurTicks = (int)duration;
-                            int   endOffsetAbs = time.Offset + stopDurTicks;
-                            int   endBeat     = time.Beat   + endOffsetAbs / 48;
-                            int   endOffset   = endOffsetAbs % 48;
-                            int   endMeasure  = time.Measure + (endBeat - 1) / signature.Beat;
-                            endBeat = ((endBeat - 1) % signature.Beat) + 1;
-                            var target = new Time(endMeasure, endBeat, endOffset);
-                            foreach (var ev in Events[target])
-                            {
-                                if (ev is Event.Bpm x)
-                                {
-                                    end = x;
-                                    end.IsStop = false;
-                                    break;
-                                }
-                            }
-
-                            if (end == null)
-                            {
-                                var last = Events.GetBpm(target);
-                                if (last == null)
-                                    break;
-
-                                end = new Event.Bpm(target, last.Value);
-                                end.IsStop = false;
-                                Events.Add(end);
-                            }
-
-                            // Stop with unaligned music offset can break other stuffs too
-                            if (MusicOffset % 48 != 0 && opt.RealignOffset)
-                                Debug.WriteLine($"[KSH] Stop event unaligned music offset");
-
+                            start.IsStop = true;
+                            pendingStops.Add((start, stopTicks));
                             break;
+                        }
                         case "beat": 
                             var sig = value.Split('/');
                             if (sig.Length != 2 || !int.TryParse(sig[0], out int b) || !int.TryParse(sig[1], out int n))
                                 break;
 
-                            signature = new Event.TimeSignature(new Time(time.Measure, 1, 0), b, n); // beat unacceptable, only at start measure
+                            // Signature changes sit on a measure start; placed after the measure's first note
+                            // line it applies to the next measure (KSH spec). The last one in a measure wins.
+                            var sigTime = new Time(offset > 0 ? time.Measure + 1 : time.Measure, 1, 0);
+                            foreach (var previous in Events[sigTime].OfType<Event.TimeSignature>().ToList())
+                                Events.Remove(previous);
+
+                            signature = new Event.TimeSignature(sigTime, b, n);
                             Events.Add(signature);
 
                             break;
@@ -518,9 +494,10 @@ namespace VoxCharger
 
                             if (fx != null)
                             {
-                                fx.Id = ++fxCount;
+                                // The effect gets its table id when a hold uses it, so identical
+                                // definitions share one FXBUTTON EFFECT INFO pair
                                 holdFx[htrack] = fx;
-                                FxLog?.Add($"{prop}={value} → ID={fx.Id} Type={fx.Type}({(int)fx.Type}) Output=[{fx}]");
+                                FxLog?.Add($"{prop}={value} → Type={fx.Type}({(int)fx.Type}) Output=[{fx}]");
                             }
                             else
                             {
@@ -536,8 +513,7 @@ namespace VoxCharger
                             var fxTrack = prop == "fx-l_se" ? Event.ButtonTrack.FxL : Event.ButtonTrack.FxR;
                             hitFx[fxTrack] = new KshSoundEffect();
                             
-                            if (Enum.TryParse(param[0], true, out Event.ChipFx hit))
-                                hitFx[fxTrack].Effect = hit;
+                            hitFx[fxTrack].Effect = Event.ChipFxFromKsh(param[0]);
 
                             if (param.Length >= 2 && int.TryParse(param[1], out int hitCount))
                                 hitFx[fxTrack].HitCount = hitCount + 1;
@@ -566,49 +542,60 @@ namespace VoxCharger
                             }
 
                             break;
-                        case "laserrange_l" when int.TryParse(value.Replace("x", ""), out int r): rangeLeft  = r; break;
-                        case "laserrange_r" when int.TryParse(value.Replace("x", ""), out int r): rangeRight = r; break;
+                        case "laserrange_l" when int.TryParse(value.Replace("x", ""), out int r): pendingRange[Event.LaserTrack.Left]  = r >= 2 ? 2 : 1; break;
+                        case "laserrange_r" when int.TryParse(value.Replace("x", ""), out int r): pendingRange[Event.LaserTrack.Right] = r >= 2 ? 2 : 1; break;
                         #endregion
                         #region --- Camera ---
-                        case "tilt" when !float.TryParse(value.Trim(), out float _):
+                        case "tilt" when !float.TryParse(value.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float _):
+                        {
                             if (!opt.Camera.IsEnabled(Camera.WorkType.Tilt))
                                 break;
 
-                            // We need manually correct the tilt because TiltMode in-game is not reliable
-                            cameras.TryGetValue(Camera.WorkType.Tilt, out var lastTilt);
+                            // A keyword ends a manual tilt series or a zero hold
+                            EndManualTilt(time, cameras, tiltSeries);
+                            CloseZeroHold(time, ref zeroHold);
 
-                            // Clear the camera cache, leave the previous tilt duration to 0
-                            cameras[Camera.WorkType.Tilt] = null;
-
-                            switch (value.Trim()) // tested with limited scenario
+                            switch (value.Trim().ToLowerInvariant())
                             {
                                 case "zero":
-                                case "normal":
-                                    // Tilt mode normal seems ignored by the game
+                                    // No tilt at all: hold the lane level until the next tilt setting
                                     Events.Add(new Event.TiltMode(time, Event.TiltType.Normal));
-
-                                    // Instead, we reset the previously applied tilt manually
-                                    Events.Add(new Camera.Tilt(time, 0, lastTilt?.End ?? 0.00f, 0.00f));
-
-                                    // Add padding to our reset tilt camera
-                                    var tiltPadding = new Camera.Tilt(time, 48, 0.00f, 0.00f);
-                                    Events.Add(tiltPadding);
-
+                                    zeroHold = new Camera.Tilt(time, 0, 0f, 0f) { NodeType = Camera.Tilt.NodeSingle };
+                                    Events.Add(zeroHold);
+                                    break;
+                                case "normal":
+                                case "keep_normal":
+                                    Events.Add(new Event.TiltMode(time, Event.TiltType.Normal));
                                     break;
                                 case "bigger":
+                                case "biggest":
+                                case "big":
                                     Events.Add(new Event.TiltMode(time, Event.TiltType.Large));
                                     break;
                                 case "keep_bigger":
+                                case "keep_biggest":
+                                case "keep":
                                     Events.Add(new Event.TiltMode(time, Event.TiltType.Incremental));
                                     break;
                             }
 
                             break;
+                        }
+                        case "lane_toggle" when int.TryParse(value.Trim(), out int laneTicks):
+                        {
+                            if (!opt.Camera.IsEnabled(Camera.WorkType.LaneClear))
+                                break;
+
+                            // Alternates between hiding and showing the lane (stock charts: LaneY 0 -> 1024 hides)
+                            laneHidden = !laneHidden;
+                            Events.Add(new Camera.LaneClear(time, Math.Max(0, laneTicks), laneHidden ? 0f : 1024f, laneHidden ? 1024f : 0f));
+                            break;
+                        }
                         case "tilt":        // Tilt
                         case "zoom_top":    // CAM_RotX
                         case "zoom_bottom": // CAM_Radi
-                        case "lane_toggle": // LaneY
-                            if (!float.TryParse(value, out float cameraVal))
+                        {
+                            if (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float cameraVal))
                                 break;
 
                             var work = Camera.WorkType.None;
@@ -628,57 +615,50 @@ namespace VoxCharger
                                     break;
                                 case "tilt":
                                     work = Camera.WorkType.Tilt;
-                                    cameraVal /= -1.0f; // untested
-                                    break;
-                                case "lane_toggle":
-                                    work = Camera.WorkType.LaneClear; // untested too
+                                    cameraVal /= -1.0f; // the game's tilt is positive to the left
                                     break;
                             }
 
                             if (!opt.Camera.IsEnabled(work))
                                 break;
 
-                            Camera camera = null;
+                            int currentTick = Events.ToTicks(time);
                             cameras.TryGetValue(work, out var lastCamera);
-                            switch (work)
+
+                            if (work == Camera.WorkType.Tilt)
                             {
-                                case Camera.WorkType.Rotation:
-                                case Camera.WorkType.Radian:
-                                case Camera.WorkType.Tilt:
-                                    camera = Camera.Create(work, time, 0, cameraVal, cameraVal);
-                                    break;
-                                case Camera.WorkType.LaneClear:
-                                    camera = new Camera.LaneClear(time, (int)cameraVal, 0.00f, 1024.00f);
-                                    break;
+                                CloseZeroHold(time, ref zeroHold);
+                                if (lastCamera == null)
+                                {
+                                    // First value of a manual series: from level to the value
+                                    var first = new Camera.Tilt(time, 0, 0f, cameraVal) { NodeType = Camera.Tilt.NodeStart };
+                                    Events.Add(first);
+                                    tiltSeries.Add(first);
+                                }
                             }
-
-                            if (camera == null)
-                                break;
-
-                            int currentOffset = time.GetAbsoluteOffset(Events.GetTimeSignature(time));
-                            if (lastCamera != null)
+                            else if (lastCamera == null)
                             {
-                                int lastOffset = lastCamera.Time.GetAbsoluteOffset(Events.GetTimeSignature(lastCamera.Time));
-                                int diff       = Math.Abs(currentOffset - lastOffset);
-
-                                lastCamera.End      = cameraVal;
-                                lastCamera.Duration = diff;
-                            }
-                            else
-                            {
-                                // Tilt might be reset via TiltMode event
-                                var timePair   = work != Camera.WorkType.Tilt ? Time.Initial  : time;
-                                int offsetPair = work != Camera.WorkType.Tilt ? currentOffset : Math.Abs(currentOffset - timePair.GetAbsoluteOffset(Events.GetTimeSignature(timePair)));
-
-                                var init = Camera.Create(work, timePair, 0, 0.00f, cameraVal);
-                                var pair = Camera.Create(work, timePair, offsetPair, cameraVal, cameraVal);
-
+                                // KSM applies the first value from the chart start
+                                var init = Camera.Create(work, Time.Initial, 0, 0.00f, cameraVal);
+                                var pair = Camera.Create(work, Time.Initial, currentTick, cameraVal, cameraVal);
                                 Events.Add(init, pair);
                             }
+
+                            if (lastCamera != null)
+                            {
+                                // The previous keyframe ramps linearly to this one (durations in real ticks)
+                                lastCamera.End      = cameraVal;
+                                lastCamera.Duration = currentTick - Events.ToTicks(lastCamera.Time);
+                            }
+
+                            var camera = Camera.Create(work, time, 0, cameraVal, cameraVal);
+                            if (camera is Camera.Tilt tiltRow)
+                                tiltSeries.Add(tiltRow);
 
                             cameras[work] = camera;
                             Events.Add(camera);
                             break;
+                        }
                         #endregion
                     }
                 }
@@ -689,12 +669,9 @@ namespace VoxCharger
                     offset    = 0;
                     noteCount = 0;
 
-                    // Reset laser range, unless there's active laser
-                    if (!lasers.ContainsKey(Event.LaserTrack.Left))
-                        rangeLeft  = 1;
-
-                    if (!lasers.ContainsKey(Event.LaserTrack.Right))
-                        rangeRight = 1;
+                    // A laserrange option only applies to a section starting in the same measure
+                    pendingRange[Event.LaserTrack.Left]  = 1;
+                    pendingRange[Event.LaserTrack.Right] = 1;
 
                     float position = measure * 192f;
                     // MusicOffset is applied to the *audio* during encode
@@ -738,12 +715,18 @@ namespace VoxCharger
                         if (!opt.Track.IsButtonTrackEnabled(track))
                             continue;
 
-                        // FxL and FxR accept any char for long note
-                        if (!int.TryParse(line[channel].ToString(), out int flag) && (track != Event.ButtonTrack.FxL && track != Event.ButtonTrack.FxR))
+                        bool   isFx     = track == Event.ButtonTrack.FxL || track == Event.ButtonTrack.FxR;
+                        char   cell     = line[channel];
+                        string legacyFx = null;
+                        int    flag;
+                        if (char.IsDigit(cell))
+                            flag = cell - '0';
+                        else if (isFx && LegacyFxEffects.TryGetValue(cell, out legacyFx))
+                            flag = 1; // KSH 1.x long FX note, the letter is its effect
+                        else
                             continue;
 
-                        // Who's right in the mind to split fx and bt event logic just because the flag is opposite? lol
-                        bool isFx   = track == Event.ButtonTrack.FxL || track == Event.ButtonTrack.FxR;
+                        // BT: 1 chip, 2 hold. FX: 2 chip, anything else hold
                         bool isChip = ((isFx && flag == 2) || (!isFx && flag == 1)) && flag != 0;
                         bool isHold = ((isFx && flag != 2) || (!isFx && flag == 2)) && flag != 0;
 
@@ -761,17 +744,14 @@ namespace VoxCharger
                                 fx.Used++;
                             }
 
-                            // Overlapping long notes
-                            if (longNotes.ContainsKey(track))
+                            // A chip right after a hold ends the hold here
+                            if (longNotes.TryGetValue(track, out var endedByChip))
                             {
-                                var ev        = longNotes[track];
-                                var timeSig   = Events.GetTimeSignature(ev.Time.Measure);
-                                ev.HoldLength = time.Difference(ev.Time, timeSig);
-
-                                Events.Add(ev);
+                                endedByChip.HoldLength = Events.ToTicks(time) - Events.ToTicks(endedByChip.Time);
+                                Events.Add(endedByChip);
+                                longNotes.Remove(track);
                             }
 
-                            longNotes.Remove(track);
                             Events.Add(new Event.Button(time, track, 0, null, hit));
                         }
                         else if (isHold)
@@ -781,200 +761,162 @@ namespace VoxCharger
                                 Effect fx = null;
                                 if (isFx)
                                 {
-                                    if (!holdFx.ContainsKey(track))
-                                        holdFx[track] = null;
-                                    
-                                    if (holdFx[track] != null && holdFx[track].Type != FxType.None)
-                                        fx = holdFx[track];
+                                    if (legacyFx != null)
+                                        fx = Effect.FromKsh(legacyFx);
+                                    else
+                                        holdFx.TryGetValue(track, out fx);
+
+                                    fx = RegisterEffect(fxTable, fx);
                                 }
 
                                 longNotes[track] = new Event.Button(time, track, 0, fx, Event.ChipFx.None);
                             }
-                            else
-                            {
-                                var ev = longNotes[track];
-                                ev.HoldLength = Math.Abs(time.Difference(ev.Time, signature));
-                            }
                         }
-                        else
+                        else if (longNotes.TryGetValue(track, out var ended))
                         {
-                            // Empty event (Event flag: 0)
-                            if (longNotes.ContainsKey(track))
-                            {
-                                var ev        = longNotes[track];
-                                var timeSig   = Events.GetTimeSignature(ev.Time.Measure);
-                                ev.HoldLength = time.Difference(ev.Time, timeSig);
-
-                                Events.Add(longNotes[track]);
-                            }
-
+                            // Empty cell: the hold ended on this line
+                            ended.HoldLength = Events.ToTicks(time) - Events.ToTicks(ended.Time);
+                            Events.Add(ended);
                             longNotes.Remove(track);
                         }
                     }
                     #endregion
 
                     #region  --- Laser ---
+                    // Lane spin after the laser characters: @( @) full spin, @< @> half spin (a swing in the
+                    // game), S< S> swing; the number is the length in 1/192 whole notes. The roll length is
+                    // written in quarter notes, twice the KSH length (the rule hand-made conversions follow).
+                    var spinImpact = Event.SlamImpact.None;
+                    int spinLength = 0;
+                    if (line.Length > 12 && opt.Camera.SlamImpact)
+                    {
+                        char kind = line[10];
+                        char dir  = line[11];
+                        if ((kind == '@' || kind == 'S') && (dir == '(' || dir == ')' || dir == '<' || dir == '>'))
+                        {
+                            string digits = new string(line.Substring(12).TakeWhile(char.IsDigit).ToArray());
+                            int.TryParse(digits, out int kshLength);
+                            spinImpact = kind == '@' && (dir == '(' || dir == ')') ? Event.SlamImpact.Measure : Event.SlamImpact.Swing;
+                            spinLength = Math.Max(1, (int)Math.Round((kshLength > 0 ? kshLength : 192) / 24.0));
+                        }
+                    }
+
                     foreach (var track in new[] { Event.LaserTrack.Left, Event.LaserTrack.Right })
                     {
                         if (!opt.Track.IsLaserTrackEnabled(track))
                             continue;
 
-                        int channel = track == Event.LaserTrack.Left ? 8 : 9;
-                        int range   = track == Event.LaserTrack.Left ? rangeLeft : rangeRight;
-                        char flag   = line[channel];
-                        var impact  = Event.SlamImpact.None;
+                        int  channel = track == Event.LaserTrack.Left ? 8 : 9;
+                        char flag    = line[channel];
 
-                        // Ignore tick
                         if (flag == ':')
+                            continue; // continues the current segment
+
+                        if (flag == '-')
+                        {
+                            if (lasers.TryGetValue(track, out var nodes))
+                            {
+                                lasers.Remove(track);
+                                FinishLaserSection(track, nodes);
+                            }
+
+                            continue;
+                        }
+
+                        int position = VolPositions.IndexOf(flag);
+                        if (position < 0)
                             continue;
 
-                        if (line.Length >= 13 && opt.Camera.SlamImpact)
+                        bool starts = !lasers.ContainsKey(track);
+                        if (starts)
                         {
-                            // Ignore direction, use slam offset instead
-                            char f = line[10];
-                            if (f == '@')
-                            {
-                                // Map the impact types
-                                char spin = line[11];
-                                if (spin == '(' || spin == ')')
-                                    impact = Event.SlamImpact.Measure;
-                                else if (spin == '<' || spin == '>')
-                                    impact = Event.SlamImpact.HalfMeasure;
-
-                                // Try to realign with impact length, seriously, why would impact has length in kshoot?
-                                if (int.TryParse(line.Substring(12), out int length))
-                                {
-                                    // This mapping may incorrect.. and stupid
-                                    if ((impact == Event.SlamImpact.Measure || impact == Event.SlamImpact.HalfMeasure) && length < 96)
-                                        impact = Event.SlamImpact.Swing;
-                                    else if (impact == Event.SlamImpact.Measure && length <= 144)
-                                        impact = Event.SlamImpact.ThreeBeat;
-                                }
-                            }
-                            else if (f == 'S')
-                                impact = Event.SlamImpact.Swing;
+                            lasers[track]       = new List<Event.Laser>();
+                            sectionRange[track] = pendingRange[track]; // laserrange applies to this section only
+                            pendingRange[track] = 1;
                         }
 
-                        var laser = new Event.Laser(
-                            time,
-                            track,
-                            0,
-                            Event.LaserFlag.Start,
-                            impact,
-                            filter,
-                            range
-                        );
-
-                        laser.IsLaserSlam = noteCount >= 32;
-                        if (flag != '-')
-                        {
-                            // Determine laser offset
-                            for (int x = 0; x < VolPositions.Length; x++)
-                            {
-                                if (VolPositions[x] == flag)
-                                    laser.Offset = (int)((x / 51f) * 127f);
-                            }
-
-                            if (lasers.ContainsKey(track))
-                                laser.Flag = Event.LaserFlag.Tick;
-                            else
-                                lasers[track] = new List<Event.Laser>();
-
-                            lasers[track].Add(laser);
-                        }
-                        else if (lasers.ContainsKey(track))
-                        {
-                            var nodes = lasers[track];
-                            lasers.Remove(track);
-
-                            // There suppose to be 2 point of laser, no?
-                            if (nodes.Count < 2)
-                                continue;
-
-                            /** Slam Laser
-                             * Every lasers inside 1/32 that 6 cells apart or less are slam in kshoot
-                             * However, Vox may produce bug when slam defined more than 2 laser events within certain amount of distance
-                             * It seems the threshold determined based on current active bpm, the exact formula is still unclear
-                             * Therefore, eliminate the duplicate / unnecessary ticks
-                             * 
-                             * For example, this code will transform following events:
-                             * 
-                             *    001,01,00    25    1    0    0    2    0
-                             *    001,01,00    95    0    0    0    2    0 // -> Unnecessary event, since the next event is the same offset
-                             *    001,01,06    95    0    0    0    2    0 // -> This cause bug because same offset and located within distance threshold
-                             *    002,01,00    95    0    0    0    2    0
-                             *    002,01,06    50    2    0    0    2    0
-                             *    
-                             * To this:
-                             * 
-                             *    001,01,00    25    1    0    0    2    0
-                             *    001,01,06    95    0    0    0    2    0 // -> Keep 001,01,06 and throw one of the duplicate
-                             *    002,01,00    95    0    0    0    2    0
-                             *    002,01,00    50    2    0    0    2    0
-                             * 
-                             */
-
-                            int counter = 0;
-                            Event.Laser last = null;
-                            foreach (var node in nodes.ToArray())
-                            {
-                                if (last == null)
-                                {
-                                    last = node;
-                                    continue;
-                                }
-
-                                if (node.Offset == last.Offset)
-                                    counter++;
-                                else
-                                    counter = 0;
-
-                                if (counter >= 2)
-                                    nodes.Remove(last);
-
-                                last = node;
-                            }
-
-                            // TODO: As inefficient as it gets lol, merge into previous loop if possible
-                            for (int n = 0; n < nodes.Count; n++)
-                            {
-                                if (n + 1 >= nodes.Count)
-                                    break;
-
-                                var start   = nodes[n];
-                                var end     = nodes[n + 1];
-                                var timeSig = Events.GetTimeSignature(start.Time);
-
-                                // Due to terrible ksh format for slam that appear in 1/32 or shorter 
-                                // the output of conversion may have 6 cells gap apart each other
-                                // TODO: Use offset instead of Time.Difference, cuz it might start and finish in different measure
-                                // Only genuine slams (different offsets) get aligned onto one tick. Two nodes
-                                // at the same offset are a short flat laser (common in 1/64+ charts);
-                                // pulling those together made zero-length segments the game can't play.
-                                if (start.IsLaserSlam && end.IsLaserSlam && start.Offset != end.Offset && end.Time.Difference(start.Time, timeSig) <= 6)
-                                {
-                                    // Pull one of the offset
-                                    // In some rare cases, not pulling the offset will ended up normal laser instead of slam, especially in slow bpm
-                                    int min  = Math.Min(start.Time.Offset, end.Time.Offset);
-                                    start.Time.Offset = end.Time.Offset = min;
-
-                                    n += 1;
-                                }
-                            }
-
-                            // Don't forget to set the flag
-                            nodes[0].Flag = Event.LaserFlag.Start;
-                            last.Flag     = Event.LaserFlag.End;
-
-                            // TODO: Reset laser range when it's no longer active in current measure(?)
-                            Events.Add(nodes.ToArray());
-                        }
+                        // 51 KSH steps onto the 0..127 VOX range
+                        var laser = new Event.Laser(time, track, (int)Math.Round(position / 50.0 * 127.0), starts ? Event.LaserFlag.Start : Event.LaserFlag.Tick, spinImpact, filter, sectionRange[track]);
+                        laser.RollLength = spinImpact != Event.SlamImpact.None ? spinLength : 0;
+                        lasers[track].Add(laser);
                     }
                     #endregion
                 }
             }
 
-            MeasureCount = measure;
+            // The header's "--" opens the first measure and every later one closes a measure;
+            // a trailing block without note lines (comments, #define_fx) is not a measure
+            MeasureCount = offset == 0 ? Math.Max(0, measure - 1) : measure;
+            int chartEndTick = Events.MeasureStartTick(MeasureCount + 1);
+
+            // Holds and lasers still open at the end of the chart end with it
+            foreach (var openHold in longNotes.Values)
+            {
+                openHold.HoldLength = Math.Max(0, chartEndTick - Events.ToTicks(openHold.Time));
+                Events.Add(openHold);
+            }
+            longNotes.Clear();
+
+            foreach (var section in lasers.ToList())
+                FinishLaserSection(section.Key, section.Value);
+            lasers.Clear();
+
+            // A manual tilt still active at the end holds through it
+            if (tiltSeries.Count > 0)
+            {
+                tiltSeries[0].NodeType = tiltSeries.Count == 1 ? Camera.Tilt.NodeSingle : Camera.Tilt.NodeStart;
+                if (tiltSeries.Count > 1)
+                    tiltSeries[tiltSeries.Count - 1].NodeType = Camera.Tilt.NodeEnd;
+                tiltSeries.Clear();
+            }
+            CloseZeroHold(Events.FromTicks(chartEndTick), ref zeroHold);
+
+            // Stop ends are placed now that every signature change is known (a stop may run into
+            // measures with another signature)
+            foreach (var (start, ticks) in pendingStops)
+            {
+                var target = Events.FromTicks(Events.ToTicks(start.Time) + ticks);
+                var end    = Events[target].OfType<Event.Bpm>().LastOrDefault();
+                if (end != null && end.IsStop)
+                    continue; // runs straight into the next stop
+
+                if (end == null)
+                {
+                    end = new Event.Bpm(target, Events.GetBpm(target)?.Value ?? start.Value);
+                    Events.Add(end);
+                }
+
+                end.IsStop = false;
+                stopEnds.Add(end);
+            }
+
+            // A stop ends with whatever BPM is in effect there, unless a t= sits on that line
+            foreach (var end in stopEnds)
+            {
+                if (explicitBpm.Contains(end))
+                    continue;
+
+                int endTick = Events.ToTicks(end.Time);
+                var active  = Events.OfType<Event.Bpm>()
+                    .Where(b => (explicitBpm.Contains(b) || !stopEnds.Contains(b)) && Events.ToTicks(b.Time) <= endTick)
+                    .OrderBy(b => Events.ToTicks(b.Time))
+                    .LastOrDefault();
+                if (active != null)
+                    end.Value = active.Value;
+            }
+
+            // The game pauses from a "4-" row until the next row without the dash, so a BPM change
+            // inside a stop has to keep the flag or it would end the stop early
+            bool inStop = false;
+            foreach (var bpm in Events.OfType<Event.Bpm>().OrderBy(b => Events.ToTicks(b.Time)).ToList())
+            {
+                if (stopEnds.Contains(bpm))
+                    inStop = false;
+                else if (bpm.IsStop)
+                    inStop = true;
+                else if (inStop)
+                    bpm.IsStop = true;
+            }
 
             // Some KSH charts append massive trailing padding after the last
             // real gameplay event — Internet Yamero's MXM ends with a
@@ -1141,6 +1083,128 @@ namespace VoxCharger
                 case "Phaser":     return "period";
                 default:           return null;
             }
+        }
+
+        // KSH 1.x wrote the effect of a long FX note as a letter in the FX lane
+        private static readonly Dictionary<char, string> LegacyFxEffects = new Dictionary<char, string>
+        {
+            { 'S', "Retrigger;8" },  { 'V', "Retrigger;12" }, { 'T', "Retrigger;16" }, { 'W', "Retrigger;24" },
+            { 'U', "Retrigger;32" }, { 'G', "Gate;4" },       { 'H', "Gate;8" },        { 'K', "Gate;12" },
+            { 'I', "Gate;16" },      { 'L', "Gate;24" },      { 'J', "Gate;32" },       { 'F', "Flanger" },
+            { 'P', "PitchShift" },   { 'B', "BitCrusher" },   { 'Q', "Phaser" },        { 'X', "Wobble;12" },
+            { 'A', "TapeStop" },     { 'D', "SideChain" },
+        };
+
+        // Stock charts define at most this many FXBUTTON EFFECT INFO pairs
+        public const int MaxFxEffectPairs = 12;
+
+        // Gives an effect its place in the FXBUTTON EFFECT INFO table (ids start at 2). Identical
+        // definitions share one entry, so a chart that redefines fx-l=Retrigger;8 fifty times gets one pair.
+        private static Effect RegisterEffect(List<Effect> table, Effect fx)
+        {
+            if (fx == null || fx.Type == FxType.None)
+                return null;
+
+            string key = fx.ToString();
+            foreach (var existing in table)
+            {
+                if (existing.ToString() == key)
+                    return existing;
+            }
+
+            fx.Id = table.Count + 2;
+            table.Add(fx);
+            if (table.Count == MaxFxEffectPairs + 1)
+                Console.WriteLine($"[ksh] more than {MaxFxEffectPairs} distinct FX effects, the game's own charts never use more");
+
+            return fx;
+        }
+
+        // KSM: two laser points at most 1/32 whole note apart with different positions form a slam
+        private const int SlamMaxTicks = 6;
+
+        // Turns the points of one KSH laser section into VOX laser events. A slam becomes two points on
+        // the start tick; in a chain of slams the shared point stays on its own tick as the next start;
+        // a spin token is kept only on a point that starts a slam.
+        private void FinishLaserSection(Event.LaserTrack track, List<Event.Laser> nodes)
+        {
+            if (nodes.Count < 2)
+                return; // KSM needs two points for a section
+
+            // Three equal positions in a row are one straight line, the middle point adds nothing
+            for (int n = nodes.Count - 2; n >= 1; n--)
+            {
+                if (nodes[n].Offset == nodes[n - 1].Offset && nodes[n].Offset == nodes[n + 1].Offset && nodes[n].Impact == Event.SlamImpact.None)
+                    nodes.RemoveAt(n);
+            }
+
+            var result = new List<Event.Laser>();
+            for (int n = 0; n < nodes.Count; n++)
+            {
+                var point = nodes[n];
+                result.Add(point);
+
+                var next = n + 1 < nodes.Count ? nodes[n + 1] : null;
+                int gap  = next != null ? Events.ToTicks(next.Time) - Events.ToTicks(point.Time) : int.MaxValue;
+                if (next != null && gap <= SlamMaxTicks && next.Offset != point.Offset)
+                {
+                    point.IsLaserSlam = next.IsLaserSlam = true;
+
+                    var  after   = n + 2 < nodes.Count ? nodes[n + 2] : null;
+                    bool chained = after != null && Events.ToTicks(after.Time) - Events.ToTicks(next.Time) <= SlamMaxTicks && after.Offset != next.Offset;
+                    if (chained)
+                    {
+                        // `next` ends this slam and starts the following one: end this slam on the start
+                        // tick and leave `next` where it is for the next slam
+                        result.Add(new Event.Laser(point.Time, track, next.Offset, Event.LaserFlag.Tick, Event.SlamImpact.None, next.Filter, next.Range));
+                    }
+                    else
+                    {
+                        next.Time = point.Time.Clone();
+                    }
+                }
+                else
+                {
+                    // A spin needs a slam on its line
+                    point.Impact     = Event.SlamImpact.None;
+                    point.RollLength = 0;
+                }
+            }
+
+            result[0].Flag = Event.LaserFlag.Start;
+            for (int n = 1; n < result.Count; n++)
+                result[n].Flag = Event.LaserFlag.Tick;
+            result[result.Count - 1].Flag = Event.LaserFlag.End;
+
+            Events.Add(result.ToArray());
+        }
+
+        // Ends an open manual tilt series at `time`: the lane snaps back to level, holds it for a beat
+        // and the rows are marked as a series so the game resumes the laser-driven tilt afterwards.
+        private void EndManualTilt(Time time, Dictionary<Camera.WorkType, Camera> cameras, List<Camera.Tilt> series)
+        {
+            cameras.TryGetValue(Camera.WorkType.Tilt, out var last);
+            cameras[Camera.WorkType.Tilt] = null;
+
+            if (series.Count == 0)
+                return;
+
+            var reset   = new Camera.Tilt(time, 0, last?.End ?? 0f, 0f);
+            var padding = new Camera.Tilt(time, 48, 0f, 0f) { NodeType = Camera.Tilt.NodeEnd };
+            Events.Add(reset, padding);
+
+            series[0].NodeType = Camera.Tilt.NodeStart;
+            series.Clear();
+        }
+
+        // Closes a tilt=zero hold at `time`
+        private void CloseZeroHold(Time time, ref Camera.Tilt zeroHold)
+        {
+            if (zeroHold == null)
+                return;
+
+            zeroHold.Duration = Math.Max(0, Events.ToTicks(time) - Events.ToTicks(zeroHold.Time));
+            zeroHold = null;
         }
 
         public void Import(VoxChart chart)
@@ -1325,12 +1389,12 @@ namespace VoxCharger
                             if (bt.Track == Event.ButtonTrack.FxL && bt.HitFx != currentChipFxL)
                             {
                                 currentChipFxL = bt.HitFx;
-                                sb.AppendLine($"fx-l_se={bt.HitFx}");
+                                sb.AppendLine($"fx-l_se={Event.ChipFxToKsh(bt.HitFx)}");
                             }
                             else if (bt.Track == Event.ButtonTrack.FxR && bt.HitFx != currentChipFxR)
                             {
                                 currentChipFxR = bt.HitFx;
-                                sb.AppendLine($"fx-r_se={bt.HitFx}");
+                                sb.AppendLine($"fx-r_se={Event.ChipFxToKsh(bt.HitFx)}");
                             }
                         }
                     }
@@ -1404,7 +1468,9 @@ namespace VoxCharger
                                 else
                                     bt4[charIdx] = '2';
 
-                                activeHolds[track] = absOffset + btn.HoldLength;
+                                // Hold lengths are real ticks, the grid here is normalized
+                                var holdEnd = Events.FromTicks(Events.ToTicks(btn.Time) + btn.HoldLength);
+                                activeHolds[track] = holdEnd.GetAbsoluteOffset(Events.GetTimeSignature(holdEnd));
                             }
                         }
                         else if (activeHolds.ContainsKey(track))

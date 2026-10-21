@@ -277,9 +277,10 @@ namespace VoxCharger
 
             public int TickOf(Time t)
             {
+                // A beat is one note of the denominator (192 / note cells), the cell is already in ticks
                 int measure = Math.Max(1, t.Measure);
                 var sig     = SignatureOf(measure);
-                return Start(measure) + (int)Math.Round(((t.Beat - 1) * TicksPerBeat + t.Offset) * 4.0 / sig.note);
+                return Start(measure) + (t.Beat - 1) * (TicksPerMeasure / Math.Max(1, sig.note)) + t.Offset;
             }
 
             public void SetBpms(IEnumerable<(int tick, float bpm)> bpms)

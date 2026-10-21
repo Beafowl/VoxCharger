@@ -232,8 +232,7 @@ namespace VoxCharger
                         // A stop marker while a stop is open ends the previous stop here and starts a new one
                         if (stop != null)
                         {
-                            var previous = Events.GetTimeSignature(stop.Time);
-                            stop.Duration = time.Difference(stop.Time, previous);
+                            stop.Duration = Events.ToTicks(time) - Events.ToTicks(stop.Time);
                             Events.Add(stop);
                         }
 
@@ -254,7 +253,7 @@ namespace VoxCharger
                                 continue;
                             }
 
-                            stop.Duration = time.Difference(stop.Time, signature);
+                            stop.Duration = Events.ToTicks(time) - Events.ToTicks(stop.Time);
                             Events.Add(stop);
 
                             stop = null;
@@ -436,7 +435,12 @@ namespace VoxCharger
                         continue;
                     }
 
-                    Events.Add(Camera.Create(work, time, duration, start, end));
+                    var cameraWork = Camera.Create(work, time, duration, start, end);
+                    if (cameraWork is Camera.Tilt tiltRow && data.Length > 6 &&
+                        float.TryParse(data[6], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float nodeType))
+                        tiltRow.NodeType = (int)nodeType;
+
+                    Events.Add(cameraWork);
                 }
                 #endregion
                 #region --- TRACK ---
@@ -519,6 +523,11 @@ namespace VoxCharger
                         else
                             laser.Range = range;
 
+                        // Roll length in quarter notes: column C8 up to format 12, C9 from format 13
+                        int lengthColumn = Version >= 13 ? 9 : 8;
+                        if (data.Length > lengthColumn && int.TryParse(data[lengthColumn], out int rollLength))
+                            laser.RollLength = rollLength;
+
                         // Locate slam
                         var slam = Events[time].FirstOrDefault(ev => 
                             (ev is Event.Laser l && l.Track == laser.Track) ||
@@ -586,6 +595,9 @@ namespace VoxCharger
 
         public void Serialize(string filename)
         {
+            // Rows of every section in time order (stable, so slam start and end keep their order)
+            var ordered = Events.OrderBy(ev => Events.ToTicks(ev.Time)).ToList();
+
             string result = string.Empty;
             result += "//====================================\n";
             result += "// SOUND VOLTEX OUTPUT TEXT FILE\n";
@@ -596,7 +608,7 @@ namespace VoxCharger
             result += "#END\n\n";
 
             result += "#BEAT INFO\n";
-            foreach (var ev in Events)
+            foreach (var ev in ordered)
             {
                 if (ev is Event.TimeSignature signature)
                     result += signature.ToString() + "\n";
@@ -605,7 +617,7 @@ namespace VoxCharger
 
             result += "#BPM INFO\n";
             Event.Bpm lastBpm = null;
-            foreach (var ev in Events)
+            foreach (var ev in ordered)
             {
                 if (ev is Event.Bpm bpm)
                 {
@@ -616,7 +628,7 @@ namespace VoxCharger
             result += "#END\n\n";
 
             result += "#TILT MODE INFO\n";
-            foreach (var ev in Events)
+            foreach (var ev in ordered)
             {
                 if (ev is Event.TiltMode tilt)
                     result += tilt.ToString() + "\n";
@@ -644,7 +656,7 @@ namespace VoxCharger
 
             var fxInfo = new List<Effect>();
             var padding = new Effect();
-            foreach (var ev in Events)
+            foreach (var ev in ordered)
             {
                 if (ev is Event.Button bt && bt.HoldFx != null && fxInfo.Find(f => f.Id == bt.HoldFx.Id) == null)
                     fxInfo.Add(bt.HoldFx);
@@ -652,6 +664,8 @@ namespace VoxCharger
 
             result += "#FXBUTTON EFFECT INFO\n";
             fxInfo.Sort((a, b) => a.Id.CompareTo(b.Id));
+            if (fxInfo.Count > Ksh.MaxFxEffectPairs)
+                Console.WriteLine($"[vox] {fxInfo.Count} FX effect pairs, the game's own charts use at most {Ksh.MaxFxEffectPairs}");
             foreach (var fx in fxInfo)
             {
                 result += fx.ToString() + "\n";
@@ -680,7 +694,7 @@ namespace VoxCharger
                 if (trackId == (int)Event.LaserTrack.Left || trackId == (int)Event.LaserTrack.Right)
                 {
                     var track = (Event.LaserTrack)trackId;
-                    foreach (var ev in Events)
+                    foreach (var ev in ordered)
                     {
                         if (ev is Event.Laser laser && laser.Track == track)
                             result += laser.ToString() + "\n";
@@ -689,7 +703,7 @@ namespace VoxCharger
                 else
                 {
                     var track = (Event.ButtonTrack)trackId;
-                    foreach (var ev in Events)
+                    foreach (var ev in ordered)
                     {
                         if (ev is Event.Button button && button.Track == track)
                             result += button.ToString() + "\n";
@@ -712,7 +726,7 @@ namespace VoxCharger
             result += "001,01,00\tAIRR_ScaX\t1\t0\t0.00\t2.00\t0.00\t0.00\n";
             foreach (Camera.WorkType work in Enum.GetValues(typeof(Camera.WorkType)))
             {
-                foreach (var ev in Events)
+                foreach (var ev in ordered)
                 {
                     if (ev is Camera camera && camera.Work == work)
                         result += $"{camera}\n";
