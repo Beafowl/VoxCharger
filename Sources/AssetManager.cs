@@ -478,18 +478,12 @@ namespace VoxCharger
                 resized.Save(path, ImageFormat.Png);
         }
 
+        // Scaled the way the original tool did it, with the Bitmap constructor's default GDI+
+        // filter: the high-quality bicubic filter used for a while made the jackets look soft in
+        // the game
         public static Bitmap ResizeJacket(Image image, int size)
         {
-            var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
-            using (var graphics = Graphics.FromImage(bitmap))
-            {
-                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                graphics.SmoothingMode     = SmoothingMode.HighQuality;
-                graphics.PixelOffsetMode   = PixelOffsetMode.HighQuality;
-                graphics.CompositingMode   = CompositingMode.SourceCopy;
-                graphics.DrawImage(image, new Rectangle(0, 0, size, size));
-            }
-            return bitmap;
+            return new Bitmap(image, new Size(size, size));
         }
 
 
