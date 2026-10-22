@@ -64,6 +64,10 @@ namespace VoxCharger
             AddRow("Version", _version, ref y);
             AddRow("INF slot", _infVersion, ref y, 120);
             AddRow("Released", _date, ref y, 120);
+            var calendarButton = new FlatButton { Glyph = ButtonGlyph.Calendar, Radius = 4, Size = new Size(30, 26) };
+            calendarButton.Location = new Point(_date.Right + 6, _date.Top);
+            calendarButton.Click += (s, e) => ShowCalendar(calendarButton);
+            Controls.Add(calendarButton);
             AddRow("Background", _background, ref y, 120);
             AddRow("Volume", _volume, ref y, 120);
 
@@ -126,6 +130,46 @@ namespace VoxCharger
                 _background.Items.Add(bg);
             _background.SelectedItem = bg;
             _volume.Value        = Clamp(_header.Volume, _volume);
+        }
+
+        [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern int SetWindowTheme(IntPtr hwnd, string appName, string idList);
+
+        // Month calendar below the release date field; picking a day fills the field
+        private void ShowCalendar(Control anchor)
+        {
+            var calendar = new MonthCalendar
+            {
+                MaxSelectionCount = 1,
+                ShowTodayCircle   = true,
+                Font              = Theme.Body,
+            };
+
+            // Without visual styles the calendar honours its colors
+            calendar.HandleCreated += (s, e) => SetWindowTheme(calendar.Handle, "", "");
+            calendar.BackColor         = Theme.Control;
+            calendar.ForeColor         = Theme.Text;
+            calendar.TitleBackColor    = Theme.Accent;
+            calendar.TitleForeColor    = Theme.OnAccent;
+            calendar.TrailingForeColor = Theme.TextOff;
+
+            if (DateTime.TryParseExact(_date.Text.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var current))
+                calendar.SetDate(current);
+
+            var host  = new ToolStripControlHost(calendar) { Margin = Padding.Empty, Padding = Padding.Empty, AutoSize = false, Size = calendar.Size };
+            var popup = new ToolStripDropDown { Padding = new Padding(1), BackColor = Theme.BorderLight, Renderer = new DarkMenuRenderer() };
+            popup.Items.Add(host);
+
+            calendar.DateSelected += (s, e) =>
+            {
+                _date.Text = e.Start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                popup.Close();
+                _date.Focus();
+            };
+            popup.Closed += (s, e) => popup.Dispose();
+
+            host.Size = calendar.Size;
+            popup.Show(anchor, new Point(anchor.Width - calendar.Width - 2, anchor.Height + 4));
         }
 
         private static decimal Clamp(decimal value, NumericUpDown box)

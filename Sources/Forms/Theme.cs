@@ -225,11 +225,13 @@ namespace VoxCharger
                         numeric.BackColor   = Theme.Control;
                         numeric.ForeColor   = Text;
                         numeric.BorderStyle = BorderStyle.FixedSingle;
+                        DarkSpinner(numeric);
                         break;
                     case ComboBox combo:
                         combo.FlatStyle = FlatStyle.Flat;
                         combo.BackColor = Theme.Control;
                         combo.ForeColor = Text;
+                        DarkCombo(combo);
                         break;
                     case ListBox list:
                         list.BackColor   = Theme.Control;
@@ -276,6 +278,108 @@ namespace VoxCharger
 
                 if (control.HasChildren && !(control is NumericUpDown))
                     ApplyDark(control);
+            }
+        }
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, object> _styled =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<Control, object>();
+
+        private static bool MarkStyled(Control control)
+        {
+            if (_styled.TryGetValue(control, out _))
+                return false;
+
+            _styled.Add(control, null);
+            return true;
+        }
+
+        // Up/down buttons of a NumericUpDown: dark fill with two chevrons instead of the system arrows
+        public static void DarkSpinner(NumericUpDown numeric)
+        {
+            if (numeric.Controls.Count == 0 || !MarkStyled(numeric))
+                return;
+
+            var buttons = numeric.Controls[0];
+            buttons.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                int w = buttons.Width, h = buttons.Height, half = h / 2;
+                var cursor = buttons.PointToClient(Cursor.Position);
+                bool inside = buttons.ClientRectangle.Contains(cursor);
+                bool pressed = inside && (System.Windows.Forms.Control.MouseButtons & MouseButtons.Left) != 0;
+
+                using (var fill = new SolidBrush(Control))
+                    g.FillRectangle(fill, 0, 0, w, h);
+
+                var hot = pressed ? Border : ControlHot;
+                if (inside)
+                {
+                    using (var brush = new SolidBrush(hot))
+                        g.FillRectangle(brush, 0, cursor.Y < half ? 0 : half, w, cursor.Y < half ? half : h - half);
+                }
+
+                using (var pen = new Pen(Border))
+                {
+                    g.DrawLine(pen, 0, 0, 0, h);
+                    g.DrawLine(pen, 0, half, w, half);
+                }
+
+                Smooth(g);
+                var color = numeric.Enabled ? TextSoft : TextOff;
+                Chevron(g, color, new PointF(w / 2f, half / 2f + 0.5f), true, 3f);
+                Chevron(g, color, new PointF(w / 2f, half + (h - half) / 2f), false, 3f);
+            };
+            buttons.MouseMove  += (s, e) => buttons.Invalidate();
+            buttons.MouseLeave += (s, e) => buttons.Invalidate();
+            buttons.Invalidate();
+        }
+
+        // Dropdown button of a ComboBox: painted over after the system draws it
+        public static void DarkCombo(ComboBox combo)
+        {
+            if (!MarkStyled(combo))
+                return;
+
+            var painter = new ComboPainter(combo);
+            if (combo.IsHandleCreated)
+                painter.AssignHandle(combo.Handle);
+            combo.HandleCreated   += (s, e) => painter.AssignHandle(combo.Handle);
+            combo.HandleDestroyed += (s, e) => painter.ReleaseHandle();
+            combo.Invalidate();
+        }
+
+        private class ComboPainter : NativeWindow
+        {
+            private const int WM_PAINT = 0x000F;
+            private readonly ComboBox _combo;
+
+            public ComboPainter(ComboBox combo)
+            {
+                _combo = combo;
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                base.WndProc(ref m);
+                if (m.Msg != WM_PAINT)
+                    return;
+
+                using (var g = Graphics.FromHwnd(_combo.Handle))
+                {
+                    int w = _combo.Width, h = _combo.Height;
+                    int arrow = SystemInformation.VerticalScrollBarWidth;
+                    var button = new Rectangle(w - arrow - 1, 1, arrow, h - 2);
+                    bool hot = _combo.Enabled && _combo.ClientRectangle.Contains(_combo.PointToClient(Cursor.Position));
+
+                    using (var fill = new SolidBrush(hot || _combo.DroppedDown ? ControlHot : Control))
+                        g.FillRectangle(fill, button);
+                    using (var pen = new Pen(Border))
+                        g.DrawLine(pen, button.Left, button.Top, button.Left, button.Bottom - 1);
+                    using (var pen = new Pen(_combo.Focused ? Accent : BorderLight))
+                        g.DrawRectangle(pen, 0, 0, w - 1, h - 1);
+
+                    Smooth(g);
+                    Chevron(g, _combo.Enabled ? TextSoft : TextOff, new PointF(button.Left + button.Width / 2f, h / 2f), false, 3.5f);
+                }
             }
         }
         #endregion
@@ -382,7 +486,7 @@ namespace VoxCharger
     }
 
     public enum ButtonKind { Secondary, Primary, Ghost, Danger }
-    public enum ButtonGlyph { None, Plus, Save, Layers, Close, Folder }
+    public enum ButtonGlyph { None, Plus, Save, Layers, Close, Folder, Calendar }
 
     // Flat rounded button drawn in the dark theme
     public class FlatButton : Button
@@ -532,6 +636,12 @@ namespace VoxCharger
                     case ButtonGlyph.Layers:
                         g.DrawPolygon(pen, new[] { new PointF(r.Left + 1, cy - 3), new PointF(cx, r.Top + 1), new PointF(r.Right - 1, cy - 3), new PointF(cx, cy + 1) });
                         g.DrawLines(pen, new[] { new PointF(r.Left + 1, cy + 1), new PointF(cx, cy + 5), new PointF(r.Right - 1, cy + 1) });
+                        break;
+                    case ButtonGlyph.Calendar:
+                        g.DrawRectangle(pen, r.Left + 1, r.Top + 2, r.Width - 2, r.Height - 3);
+                        g.DrawLine(pen, r.Left + 1, r.Top + 6, r.Right - 1, r.Top + 6);
+                        g.DrawLine(pen, r.Left + 4, r.Top, r.Left + 4, r.Top + 3);
+                        g.DrawLine(pen, r.Right - 4, r.Top, r.Right - 4, r.Top + 3);
                         break;
                     case ButtonGlyph.Folder:
                         g.DrawPolygon(pen, new[] { new PointF(r.Left + 1, r.Top + 3), new PointF(r.Left + 5, r.Top + 3), new PointF(r.Left + 7, r.Top + 5), new PointF(r.Right - 1, r.Top + 5), new PointF(r.Right - 1, r.Bottom - 2), new PointF(r.Left + 1, r.Bottom - 2) });
