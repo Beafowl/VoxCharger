@@ -25,11 +25,13 @@ namespace VoxCharger
             this._header = header;
             VoxLevelHeader level;
             if (!header.Levels.TryGetValue(difficulty, out level))
-                Result = new VoxLevelHeader();
+                Result = new VoxLevelHeader { Difficulty = difficulty };
             else
                 Result = level;
 
             InitializeComponent();
+
+            Theme.Attach(this);
         }
 
         private void OnLevelEditorFormLoad(object sender, EventArgs e)

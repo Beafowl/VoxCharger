@@ -521,6 +521,82 @@ namespace VoxCharger
                 File.Delete(jacket);
         }
 
+        // Deletes the files of one chart: vox, its own audio, jackets and song select thumbnail
+        public static void DeleteLevelAssets(VoxHeader header, Difficulty difficulty, string voxPath, string jacketPath, string thumbnailPath)
+        {
+            var files = new List<string> { voxPath, $"{jacketPath}.png", $"{jacketPath}_b.png", $"{jacketPath}_s.png", $"{thumbnailPath}.png" };
+            foreach (var format in new[] { AudioFormat.S3V, AudioFormat.Iidx })
+            {
+                files.Add(GetAudioPath(header, difficulty, format));
+                files.Add(GetAudioPath(header, difficulty, format, true));
+            }
+
+            foreach (string file in files)
+            {
+                if (!string.IsNullOrEmpty(file) && File.Exists(file))
+                    File.Delete(file);
+            }
+        }
+
+        // Every song of every mix, optionally with the game's own songs, each tagged with the folder it
+        // was read from. For browsing only: nothing in these lists is saved.
+        public static List<VoxHeader> LoadCombined(bool includeOriginal)
+        {
+            var result = new List<VoxHeader>();
+            if (string.IsNullOrEmpty(GamePath))
+                return result;
+
+            if (includeOriginal)
+                result.AddRange(ReadDb(Path.Combine(GamePath, @"data\others\music_db.xml"), Path.Combine(GamePath, "data"), null));
+
+            foreach (string mix in _mixList)
+            {
+                string mixPath = Path.Combine(GamePath, @"data_mods", mix);
+                result.AddRange(ReadDb(Path.Combine(mixPath, @"others\music_db.merged.xml"), mixPath, mix));
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<VoxHeader> ReadDb(string dbFilename, string sourcePath, string sourceMix)
+        {
+            var db = new MusicDb();
+            try
+            {
+                if (File.Exists(dbFilename))
+                    db.Load(dbFilename);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to read {dbFilename}: {ex.Message}");
+            }
+
+            foreach (var header in db)
+            {
+                header.SourcePath = sourcePath;
+                header.SourceMix  = sourceMix;
+                yield return header;
+            }
+        }
+
+        // Number of songs in a mix, counted without parsing its music db
+        public static int CountSongs(string mixName)
+        {
+            try
+            {
+                string dbFilename = Path.Combine(GamePath, @"data_mods", mixName, @"others\music_db.merged.xml");
+                if (!File.Exists(dbFilename))
+                    return 0;
+
+                string text = File.ReadAllText(dbFilename, Encoding.GetEncoding("Shift_JIS"));
+                return System.Text.RegularExpressions.Regex.Matches(text, @"<music\s+id=").Count;
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+
         // Every thumbnail of a song, whichever archive folder it is in (older mixes kept them all in 00)
         public static List<string> FindThumbnails(int musicId)
         {
@@ -652,7 +728,7 @@ namespace VoxCharger
         public static string GetMusicPath(VoxHeader header)
         {
             return Path.Combine(
-                MixPath,
+                header.SourcePath ?? MixPath,
                 $"music\\{header.CodeName}\\"
             );
         }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows.Forms;
 
 namespace VoxCharger
@@ -10,6 +10,7 @@ namespace VoxCharger
         public InputForm(string title, string prompt, string value = "")
         {
             InitializeComponent();
+            Theme.Attach(this);
             Text = title;
             PromptLabel.Text = prompt;
             InputTextBox.Text = value;

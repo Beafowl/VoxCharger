@@ -128,6 +128,7 @@ namespace VoxCharger
         public ConverterForm(string path, ConvertMode convert)
         {
             InitializeComponent();
+            Theme.Attach(this);
 
             _target = path;
             _mode   = convert;

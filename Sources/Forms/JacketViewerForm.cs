@@ -9,6 +9,7 @@ namespace VoxCharger
         public JacketViewerForm(Image image)
         {
             InitializeComponent();
+            Theme.Attach(this);
 
             JacketPictureBox.Size  = Size = image.Size;
             JacketPictureBox.Image = image;

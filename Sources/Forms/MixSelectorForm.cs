@@ -13,6 +13,7 @@ namespace VoxCharger
         public MixSelectorForm(bool createMode = false)
         {
             InitializeComponent();
+            Theme.Attach(this);
 
             if (createMode)
             {

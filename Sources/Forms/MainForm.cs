@@ -14,226 +14,566 @@ namespace VoxCharger
     public partial class MainForm : Form
     {
         #region -- Variables --
-        private const int DefaultVolume = 91;
-        private readonly Image _dummyJacket = VoxCharger.Properties.Resources.jk_dummy_s;
+        private const string ViewAll     = "*all";
+        private const string ViewModsAll = "*mods";
+
         private readonly Dictionary<string, Queue<Action>> _actions = new Dictionary<string, Queue<Action>>();
 
+        // False while the loaded mix has changes that are not written yet; drives the Save button
         private bool _pristine = true;
-        private bool _autosave = true;
 
-        // Music list sort state. The ListBox itself has Sorted=false now so
-        // we control ordering manually — the alphabetical default is
-        // preserved by initialising _sortMode to TitleAsc.
+        // Mix name, ViewAll or ViewModsAll. Combined views list songs of several folders and are read-only.
+        private string _view;
+        private List<VoxHeader> _combined;
+
         private enum SortMode { TitleAsc, TitleDesc, IdAsc, IdDesc }
         private SortMode _sortMode = SortMode.TitleAsc;
 
-        // Live search filter applied to the music list. Empty string matches
-        // every chart. Hits title, artist, ASCII code, and music id (substring,
-        // case-insensitive) so a user can find a song by any of those fields.
+        // Live search filter applied to the music list: title, artist, ascii code or music id
         private string _searchText = string.Empty;
+
+        private readonly ContextMenuStrip _songsMenu = DarkMenuRenderer.CreateMenu();
+        private readonly ContextMenuStrip _mixMenu   = DarkMenuRenderer.CreateMenu();
+        private readonly ContextMenuStrip _toolsMenu = DarkMenuRenderer.CreateMenu();
+        private readonly ContextMenuStrip _sortMenu  = DarkMenuRenderer.CreateMenu();
+        private readonly ContextMenuStrip _viewMenu  = DarkMenuRenderer.CreateMenu();
+        private readonly ContextMenuStrip _listMenu  = DarkMenuRenderer.CreateMenu();
+
+        private ToolStripMenuItem _deleteMixItem;
+        private ToolStripMenuItem _mixTagItem;
+        private ToolStripMenuItem _startIdItem;
+        private ToolStripMenuItem _reconvertItem;
+        private ToolStripMenuItem _removeSongItem;
+        private ToolStripSeparator _listSeparator;
+
+        private Image _songJacket;
         #endregion
 
-        // EM_SETCUEBANNER lets us put greyed-out placeholder text in the
-        // search box without subclassing or hand-rolling a paint override.
-        // .NET Framework 4.7.2 doesn't expose TextBox.PlaceholderText.
+        // EM_SETCUEBANNER puts greyed-out placeholder text in the search box
         [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
         private static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, string lParam);
         private const int EM_SETCUEBANNER = 0x1501;
+
+        private bool HasGame  => !string.IsNullOrEmpty(AssetManager.GamePath);
+        private bool Combined => _view == ViewAll || _view == ViewModsAll;
+        private bool CanEdit  => HasGame && !Combined && !string.IsNullOrEmpty(_view) && !string.IsNullOrEmpty(AssetManager.MixName);
+
+        private IEnumerable<VoxHeader> CurrentHeaders => Combined ? (IEnumerable<VoxHeader>)_combined ?? new List<VoxHeader>() : AssetManager.Headers;
+
+        private ChartTile[] Tiles => new[] { NovTile, AdvTile, ExhTile, InfTile };
 
         #region --- Form ---
         public MainForm()
         {
             InitializeComponent();
-            // Pick a titlebar/taskbar icon that reads against the current
-            // Windows app theme: dark icon on light theme, white icon on
-            // dark theme. The Win32 ApplicationIcon embedded in the .exe
-            // (used by Explorer when the app isn't running) stays the
-            // single dark variant — there's no theme-aware static icon.
+
             var icon = IconLoader.ForCurrentTheme();
             if (icon != null) Icon = icon;
+
+            BuildMenus();
+            foreach (var tile in Tiles)
+            {
+                tile.EditClicked   += OnChartEditClick;
+                tile.RemoveClicked += OnChartRemoveClick;
+            }
+
+            MusicListBox.ContextMenuStrip = _listMenu;
+            HandleCreated += (s, e) => Theme.DarkTitleBar(this);
+            foreach (var panel in new Control[] { HeaderPanel, SidePanel, ContentPanel })
+                panel.SizeChanged += (s, e) => LayoutWindow();
+            Theme.DarkScrollBars(ContentPanel);
         }
 
         private void OnMainFormLoad(object sender, EventArgs e)
         {
-            // Greyed-out placeholder text in the search box; clears on focus,
-            // reappears when empty. EM_SETCUEBANNER is the native way to do
-            // this on .NET Framework, no custom paint code needed.
-            SendMessage(SearchTextBox.Handle, EM_SETCUEBANNER, 1, "Search by title, artist, code, or id…");
+            SendMessage(SearchBox.Input.Handle, EM_SETCUEBANNER, 1, "Search title, artist or ID");
+            LayoutWindow();
 
-            try
+            string gamePath = null;
+            foreach (string candidate in new[] { Application.StartupPath, UiSettings.GamePath })
             {
-                string currentDir = Application.StartupPath;
-                string dbFilename = Path.Combine(currentDir, @"data\others\music_db.xml");
-
-                if (File.Exists(dbFilename))
+                if (!string.IsNullOrEmpty(candidate) && File.Exists(Path.Combine(candidate, @"data\others\music_db.xml")))
                 {
-                    AssetManager.Initialize(currentDir);
-
-                    using (var mixSelector = new MixSelectorForm())
-                    {
-                        if (mixSelector.ShowDialog() == DialogResult.OK)
-                            Reload();
-                    }
+                    gamePath = candidate;
+                    break;
                 }
             }
-            catch (Exception)
-            {
-                // Ignore -- user can still open manually via the Open button
-            }
+
+            if (gamePath == null || !OpenGame(gamePath))
+                UpdateUi();
         }
 
         private void OnMainFormFormClosing(object sender, FormClosingEventArgs e)
         {
-            if (!_pristine && SaveFileMenu.Enabled)
-            {
-                var response = MessageBox.Show(
-                    "Save file before exit the program?",
-                    "Quit",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Question
-                );
+            if (!ConfirmUnsaved("Quit"))
+                e.Cancel = true;
+        }
 
-                if (response == DialogResult.Yes)
-                    SaveFileMenu.PerformClick();
-                else if (response == DialogResult.Cancel)
-                    e.Cancel = true;
+        // Asks to save pending changes. False when the user cancels.
+        private bool ConfirmUnsaved(string title)
+        {
+            if (_pristine || !CanEdit)
+                return true;
+
+            var response = MessageBox.Show(
+                $"Save the changes to \"{AssetManager.MixName}\" first?",
+                title,
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Question
+            );
+
+            if (response == DialogResult.Cancel)
+                return false;
+
+            if (response == DialogResult.Yes)
+                SaveMix();
+
+            _actions.Clear();
+            _pristine = true;
+            return true;
+        }
+
+        private void MarkDirty()
+        {
+            _pristine = false;
+            UpdateUi();
+        }
+        #endregion
+
+        #region --- Layout ---
+        private void LayoutWindow()
+        {
+            if (HeaderPanel == null)
+                return;
+
+            // Header: search after the app name, actions on the right
+            AppSubLabel.Location = new Point(AppLabel.Right + 6, AppLabel.Top + 2);
+            int right = HeaderPanel.Width - 16;
+            AboutButton.Location = new Point(right - AboutButton.Width, 10);
+            ToolsButton.Location = new Point(AboutButton.Left - 4 - ToolsButton.Width, 10);
+            SaveButton.Location  = new Point(ToolsButton.Left - 10 - SaveButton.Width, 10);
+            int searchLeft = Math.Max(AppSubLabel.Right + 40, SidePanel.Width + 0);
+            SearchBox.SetBounds(searchLeft, 10, Math.Max(160, Math.Min(420, SaveButton.Left - 24 - searchLeft)), 32);
+
+            // Left column
+            int w = SidePanel.Width;
+            MixButton.SetBounds(16, 36, w - 32, 40);
+            ListHeaderPanel.SetBounds(0, 88, w, 34);
+            SortButton.Location = new Point(w - 12 - SortButton.Width, 4);
+            BottomPanel.SetBounds(0, SidePanel.Height - 60, w, 60);
+            SongsButton.SetBounds(16, 12, (w - 42) / 2, 36);
+            MixMenuButton.SetBounds(SongsButton.Right + 10, 12, w - 32 - SongsButton.Width - 10, 36);
+            MusicListBox.SetBounds(0, ListHeaderPanel.Bottom, w, BottomPanel.Top - ListHeaderPanel.Bottom);
+            EmptyListLabel.Bounds = MusicListBox.Bounds;
+
+            // Right column
+            int cw = ContentPanel.ClientSize.Width - 48;
+            int ch = ContentPanel.ClientSize.Height;
+            EmptyContentLabel.SetBounds(24, 0, cw, ch);
+            GamePathButton.Location = new Point((ContentPanel.ClientSize.Width - GamePathButton.Width) / 2, ch / 2 + 24);
+
+            MetadataCard.SetBounds(24, 20, cw, 252);
+            JacketBox.Location = new Point(20, 20);
+            EditMetadataButton.Location = new Point(cw - 20 - EditMetadataButton.Width, 46);
+            ExplorerButton.Location = new Point(EditMetadataButton.Left - 8 - ExplorerButton.Width, 46);
+            int textLeft = JacketBox.Right + 18;
+            ChipsLabel.SetBounds(textLeft, 22, ExplorerButton.Left - 16 - textLeft, 20);
+            TitleLabel.SetBounds(textLeft - 3, 44, ExplorerButton.Left - 12 - textLeft, 36);
+            ArtistLabel.SetBounds(textLeft, 82, ExplorerButton.Left - 12 - textLeft, 22);
+
+            int tileW = (cw - 40 - 30) / 4;
+            var stats = new[] { BpmTile, VolumeTile, BackgroundTile, DateTile };
+            for (int i = 0; i < stats.Length; i++)
+                stats[i].SetBounds(20 + i * (tileW + 10), 128, tileW, 62);
+            FilesLabel.SetBounds(20, 204, cw - 40, 30);
+
+            ChartsCard.SetBounds(24, MetadataCard.Bottom + 16, cw, 72 + 88 + 12 + 88 + 20);
+            ReconvertButton.Location = new Point(cw - 20 - ReconvertButton.Width, 18);
+            int chartW = (cw - 40 - 12) / 2;
+            NovTile.SetBounds(20, 72, chartW, 88);
+            AdvTile.SetBounds(20 + chartW + 12, 72, chartW, 88);
+            ExhTile.SetBounds(20, 72 + 88 + 12, chartW, 88);
+            InfTile.SetBounds(20 + chartW + 12, 72 + 88 + 12, chartW, 88);
+        }
+
+        private void OnHeaderPanelPaint(object sender, PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            Theme.Smooth(g);
+            var logo = new Rectangle(16, 13, 26, 26);
+            Theme.FillRounded(g, Theme.Accent, logo, 7);
+            using (var pen = new Pen(Theme.OnAccent, 2.2f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round, LineJoin = System.Drawing.Drawing2D.LineJoin.Round })
+                g.DrawLines(pen, new[] { new PointF(logo.X + 7, logo.Y + 8), new PointF(logo.X + 13, logo.Y + 19), new PointF(logo.X + 19, logo.Y + 8) });
+
+            using (var pen = new Pen(Theme.Border))
+                g.DrawLine(pen, 0, HeaderPanel.Height - 1, HeaderPanel.Width, HeaderPanel.Height - 1);
+        }
+
+        private void OnSidePanelPaint(object sender, PaintEventArgs e)
+        {
+            using (var pen = new Pen(Theme.Border))
+                e.Graphics.DrawLine(pen, SidePanel.Width - 1, 0, SidePanel.Width - 1, SidePanel.Height);
+        }
+
+        private void OnStripPaint(object sender, PaintEventArgs e)
+        {
+            var panel = (Control)sender;
+            using (var pen = new Pen(Theme.Border))
+            {
+                e.Graphics.DrawLine(pen, 0, 0, panel.Width, 0);
+                e.Graphics.DrawLine(pen, 0, panel.Height - 1, panel.Width, panel.Height - 1);
+                e.Graphics.DrawLine(pen, panel.Width - 1, 0, panel.Width - 1, panel.Height);
+            }
+        }
+
+        private void OnJacketBoxPaint(object sender, PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Theme.Card);
+            Theme.Smooth(g);
+            var rect = new Rectangle(0, 0, JacketBox.Width - 1, JacketBox.Height - 1);
+            var header = MusicListBox.SelectedItem as VoxHeader;
+            if (_songJacket != null)
+                JacketCache.DrawImage(g, _songJacket, rect, 10);
+            else
+                JacketCache.DrawPlaceholder(g, rect, VoxHeader.WithDecodedSymbols(header?.Title), 10, new Font("Segoe UI", 24f, FontStyle.Bold));
+        }
+
+        // Chips above the title: music id, the mix the song is in, the tag
+        private void OnChipsLabelPaint(object sender, PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Theme.Card);
+            Theme.Smooth(g);
+            if (!(MusicListBox.SelectedItem is VoxHeader header))
+                return;
+
+            var chips = new List<(string text, bool accent, bool mono)> { ($"ID {header.Id}", false, true) };
+            string mix = Combined ? (header.SourceMix ?? "game") : AssetManager.MixName;
+            if (!string.IsNullOrEmpty(mix))
+                chips.Add((mix, true, false));
+
+            int tag = !Combined && AssetManager.MixTagId > 0 ? AssetManager.MixTagId : header.TagId;
+            if (tag > 0)
+                chips.Add(($"tag {tag}", true, false));
+
+            int x = 0;
+            foreach (var chip in chips)
+            {
+                var font = chip.mono ? Theme.Mono : Theme.Small;
+                int width = TextRenderer.MeasureText(g, chip.text, font, Size.Empty, TextFormatFlags.NoPadding).Width + 16;
+                var rect = new Rectangle(x, 0, width, 20);
+                Theme.FillRounded(g, chip.accent ? Theme.AccentSoft : Theme.Border, rect, 10);
+                Theme.DrawText(g, chip.text, font, chip.accent ? Theme.AccentText : Theme.TextSoft, rect, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                x += width + 8;
             }
         }
         #endregion
 
-        #region --- Menu ---
-        private void OnNewFileMenuClick(object sender, EventArgs e)
+        #region --- Menus ---
+        private void BuildMenus()
         {
-            if (!_pristine && SaveFileMenu.Enabled)
-            {
-                var response = MessageBox.Show(
-                    "Save file before open another mix?",
-                    "Create Mix",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Question
-                );
+            var addSong = DarkMenuRenderer.Item("Add song");
+            addSong.DropDownItems.Add(DarkMenuRenderer.Item("From KSH…", OnSingleImportMenuClick));
+            addSong.DropDownItems.Add(DarkMenuRenderer.Item("From URL…", OnImportKsmDevMenuClick));
+            addSong.DropDownItems.Add(DarkMenuRenderer.Item("New", OnAddNewMenuClick));
 
-                if (response == DialogResult.Yes)
-                    SaveFileMenu.PerformClick();
-                else if (response == DialogResult.Cancel)
+            var addSongs = DarkMenuRenderer.Item("Add songs");
+            addSongs.DropDownItems.Add(DarkMenuRenderer.Item("From KSH folder…", OnBulkImportKshMenuClick));
+            addSongs.DropDownItems.Add(DarkMenuRenderer.Item("From JSON…", OnImportJsonMenuClick));
+
+            _songsMenu.Items.AddRange(new ToolStripItem[] { addSong, addSongs });
+
+            _deleteMixItem = DarkMenuRenderer.Item("Delete", OnDeleteMixFileMenuClick);
+            _deleteMixItem.Tag = "danger";
+            _mixMenu.Items.AddRange(new ToolStripItem[] { DarkMenuRenderer.Item("Create…", OnNewFileMenuClick), _deleteMixItem });
+
+            _mixTagItem  = DarkMenuRenderer.Item("Set mix tag…", OnMixTagFileMenuClick, "");
+            _startIdItem = DarkMenuRenderer.Item("Set starting ID…", OnMixStartIdFileMenuClick, "");
+            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem });
+            _toolsMenu.Opening += (s, e) =>
+            {
+                _mixTagItem.ShortcutKeyDisplayString  = AssetManager.MixTagId > 0 ? AssetManager.MixTagId.ToString() : "none";
+                _startIdItem.ShortcutKeyDisplayString = AssetManager.MixStartId > 0 ? AssetManager.MixStartId.ToString() : "none";
+            };
+
+            _sortMenu.Items.AddRange(new ToolStripItem[]
+            {
+                DarkMenuRenderer.Item("Title A to Z", (s, e) => SetSortMode(SortMode.TitleAsc,  "Title A to Z")),
+                DarkMenuRenderer.Item("Title Z to A", (s, e) => SetSortMode(SortMode.TitleDesc, "Title Z to A")),
+                DarkMenuRenderer.Item("ID ascending", (s, e) => SetSortMode(SortMode.IdAsc,     "ID ascending")),
+                DarkMenuRenderer.Item("ID descending", (s, e) => SetSortMode(SortMode.IdDesc,   "ID descending")),
+            });
+
+            _reconvertItem  = DarkMenuRenderer.Item("Reconvert from ksm.dev", OnReconvertFromUrlClick);
+            _removeSongItem = DarkMenuRenderer.Item("Remove song", OnRemoveButtonClick, "Del");
+            _removeSongItem.Tag = "danger";
+            _listSeparator  = new ToolStripSeparator();
+            _listMenu.Items.AddRange(new ToolStripItem[] { DarkMenuRenderer.Item("Show in Explorer", OnExplorerEditMenuClick), _reconvertItem, _listSeparator, _removeSongItem });
+            _listMenu.Opening += (s, e) =>
+            {
+                if (!(MusicListBox.SelectedItem is VoxHeader))
+                {
+                    e.Cancel = true;
+                    return;
+                }
+
+                RefreshReconvertControls();
+                _reconvertItem.Visible  = CanEdit;
+                _removeSongItem.Visible = _listSeparator.Visible = CanEdit;
+            };
+
+            foreach (var pair in new[] { (_songsMenu, SongsButton), (_mixMenu, MixMenuButton), (_toolsMenu, ToolsButton), (_sortMenu, SortButton), (_viewMenu, MixButton) })
+            {
+                var button = pair.Item2;
+                pair.Item1.Closed += (s, e) => { button.Highlighted = false; button.Invalidate(); };
+            }
+        }
+
+        private void ShowMenu(ContextMenuStrip menu, FlatButton button, bool above, bool alignRight = false)
+        {
+            button.Highlighted = true;
+            button.Invalidate();
+            menu.MinimumSize = new Size(alignRight ? 0 : Math.Min(button.Width, 360), 0);
+            if (above)
+                menu.Show(button, new Point(0, -4), ToolStripDropDownDirection.AboveRight);
+            else if (alignRight)
+                menu.Show(button, new Point(button.Width, button.Height + 4), ToolStripDropDownDirection.BelowLeft);
+            else
+                menu.Show(button, new Point(0, button.Height + 4), ToolStripDropDownDirection.BelowRight);
+        }
+
+        private void OnSongsButtonClick(object sender, EventArgs e)   => ShowMenu(_songsMenu, SongsButton, true);
+        private void OnMixMenuButtonClick(object sender, EventArgs e) => ShowMenu(_mixMenu, MixMenuButton, true);
+        private void OnToolsButtonClick(object sender, EventArgs e)   => ShowMenu(_toolsMenu, ToolsButton, false, true);
+        private void OnSortButtonClick(object sender, EventArgs e)    => ShowMenu(_sortMenu, SortButton, false, true);
+
+        // Mix selector: the two combined views, then every mix with its song count
+        private void OnMixButtonClick(object sender, EventArgs e)
+        {
+            if (!HasGame)
+            {
+                OnGamePathButtonClick(sender, e);
+                return;
+            }
+
+            _viewMenu.Items.Clear();
+            _viewMenu.Items.Add(DarkMenuRenderer.Group("COMBINED"));
+            _viewMenu.Items.Add(ViewItem("All", ViewAll, "every mix and the game's songs"));
+            _viewMenu.Items.Add(ViewItem("All (mods only)", ViewModsAll, "every mix, without the game's songs"));
+
+            var mixes = AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
+            _viewMenu.Items.Add(new ToolStripSeparator());
+            _viewMenu.Items.Add(DarkMenuRenderer.Group("MIXES"));
+            if (mixes.Count == 0)
+                _viewMenu.Items.Add(new ToolStripMenuItem("No mixes yet, use Mix › Create") { Enabled = false, Padding = new Padding(4, 6, 4, 6) });
+
+            foreach (string mix in mixes)
+            {
+                int count = AssetManager.CountSongs(mix);
+                _viewMenu.Items.Add(ViewItem(mix, mix, $"{count} song{(count == 1 ? "" : "s")}"));
+            }
+
+            ShowMenu(_viewMenu, MixButton, false);
+        }
+
+        private ToolStripMenuItem ViewItem(string text, string view, string detail)
+        {
+            var item = DarkMenuRenderer.Item(text, (s, e) => SelectView(view), detail);
+            if (view == _view)
+                item.Font = Theme.BodyBold;
+            return item;
+        }
+        #endregion
+
+        #region --- Game folder and views ---
+        private void OnGamePathButtonClick(object sender, EventArgs e)
+        {
+            if (!ConfirmUnsaved("Game folder"))
+                return;
+
+            using (var browser = new CommonOpenFileDialog())
+            {
+                browser.IsFolderPicker = true;
+                browser.Multiselect    = false;
+                browser.Title          = "Select the game's contents folder (the one holding data and data_mods)";
+
+                if (browser.ShowDialog() != CommonFileDialogResult.Ok)
                     return;
 
-                _pristine = true;
-                _actions.Clear();
-            }
-
-            string gamePath = AssetManager.GamePath;
-            if (string.IsNullOrEmpty(AssetManager.MixPath) || !Directory.Exists(AssetManager.MixPath))
-            {
-                using (var browser = new CommonOpenFileDialog())
+                if (!File.Exists(Path.Combine(browser.FileName, @"data\others\music_db.xml")))
                 {
-                    browser.IsFolderPicker = true;
-                    browser.Multiselect    = false;
-
-                    if (browser.ShowDialog() != CommonFileDialogResult.Ok)
-                        return;
-                    
-                    gamePath = browser.FileName;
-                    PathTextBox.Text = string.Empty;
-                    MusicListBox.Items.Clear();
-
-                    ResetEditor();
+                    MessageBox.Show(
+                        "This folder has no data\\others\\music_db.xml. Pick the game's contents folder.",
+                        "Game folder",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
+                    return;
                 }
+
+                OpenGame(browser.FileName);
             }
+        }
+
+        private bool OpenGame(string gamePath)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(gamePath, "data_mods"));
+                AssetManager.Initialize(gamePath);
+                UiSettings.GamePath = gamePath;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Game folder", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+
+            var mixes = AssetManager.GetMixes();
+            string view = UiSettings.LastView;
+            if (view != ViewAll && view != ViewModsAll && !mixes.Contains(view))
+                view = mixes.OrderBy(m => m, StringComparer.OrdinalIgnoreCase).FirstOrDefault() ?? ViewAll;
+
+            SelectView(view, false);
+            return true;
+        }
+
+        // Switches the song list to a mix or a combined view
+        private void SelectView(string view, bool confirm = true)
+        {
+            if (confirm && view != _view && !ConfirmUnsaved("Change mix"))
+                return;
+
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                if (view == ViewAll || view == ViewModsAll)
+                {
+                    _combined = AssetManager.LoadCombined(view == ViewAll);
+                }
+                else
+                {
+                    AssetManager.LoadMix(view);
+                    _combined = null;
+                }
+
+                _view = view;
+                UiSettings.LastView = view;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Open mix", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _view = null;
+                _combined = null;
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
+
+            _actions.Clear();
+            _pristine = true;
+            JacketCache.Clear();
+
+            switch (_view)
+            {
+                case null:        MixButton.Text = "Choose a mix"; MixButton.SubText = null; break;
+                case ViewAll:     MixButton.Text = "All"; break;
+                case ViewModsAll: MixButton.Text = "All (mods only)"; break;
+                default:          MixButton.Text = _view; break;
+            }
+
+            MusicListBox.ClearSelected();
+            ApplyCurrentSort();
+            UpdateUi();
+            ShowSelection();
+        }
+
+        private void UpdateUi()
+        {
+            bool game = HasGame;
+            int count = _view == null ? 0 : CurrentHeaders.Count();
+
+            MixButton.SubText       = _view == null ? null : $"{count} song{(count == 1 ? "" : "s")}";
+            MixButton.Invalidate();
+            ListCaptionLabel.Text   = _view == ViewAll ? "Songs of every mix and the game" : _view == ViewModsAll ? "Songs of every mix" : "Songs in this mix";
+            SongsButton.Enabled     = CanEdit;
+            MixMenuButton.Enabled   = game;
+            _deleteMixItem.Enabled  = CanEdit;
+            ToolsButton.Enabled     = CanEdit;
+            SaveButton.Enabled      = CanEdit && !_pristine;
+            SortButton.Enabled      = game;
+            MixButton.Enabled       = true;
+            MusicListBox.Enabled    = game;
+            GamePathButton.Visible  = !game;
+
+            if (!game)
+                EmptyContentLabel.Text = "VoxCharger needs the game's contents folder, the one holding data and data_mods.";
+            else if (_view == null)
+                EmptyContentLabel.Text = "Choose a mix above the song list.";
+            else
+                EmptyContentLabel.Text = "Select a song from the list";
+
+            bool emptyList = game && _view != null && MusicListBox.Items.Count == 0;
+            EmptyListLabel.Visible = emptyList;
+            if (emptyList)
+            {
+                if (!string.IsNullOrEmpty(_searchText))
+                    EmptyListLabel.Text = "No song matches the search.";
+                else if (CanEdit)
+                    EmptyListLabel.Text = "No songs in this mix yet.\nUse Songs › Add song or Add songs.";
+                else
+                    EmptyListLabel.Text = "No songs here.";
+            }
+        }
+        #endregion
+
+        #region --- Mix ---
+        private void OnNewFileMenuClick(object sender, EventArgs e)
+        {
+            if (!ConfirmUnsaved("Create mix"))
+                return;
 
             using (var mixSelector = new MixSelectorForm(createMode: true))
             {
-                AssetManager.Initialize(gamePath);
-                if (mixSelector.ShowDialog() == DialogResult.OK)
-                    Reload();
-            }
-        }
-
-        private void OnSaveFileMenuClick(object sender, EventArgs e)
-        {
-            try
-            {
-                if (Save(AssetManager.MdbFilename))
-                {
-                    MessageBox.Show(
-                       "Mix has been saved successfully",
-                       "Information",
-                       MessageBoxButtons.OK,
-                       MessageBoxIcon.Information
-                   );
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(
-                    ex.Message, 
-                    "Error", 
-                    MessageBoxButtons.OK, 
-                    MessageBoxIcon.Error
-                );
-            }
-        }
-
-
-        private void OnSaveAsFileMenuClick(object sender, EventArgs e)
-        {
-            try
-            {
-                using (var exporter = new SaveFileDialog())
-                {
-                    exporter.Filter   = "Music DB|*.xml|All Files|*.*";
-                    exporter.FileName = new FileInfo(AssetManager.MdbFilename).Name; 
-
-                    if (exporter.ShowDialog() != DialogResult.OK)
-                        return;
-
-                    if (Save(exporter.FileName))
-                    {
-                        MessageBox.Show(
-                           "Mix has been saved successfully",
-                           "Information",
-                           MessageBoxButtons.OK,
-                           MessageBoxIcon.Information
-                        );
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(
-                    ex.Message,
-                    "Error",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error
-                );
-            }
-        }
-
-        private void OnChangeMixFileMenuClick(object sender, EventArgs e)
-        {
-            if (!_pristine && SaveFileMenu.Enabled)
-            {
-                var response = MessageBox.Show(
-                    "Save file before Open another mix?",
-                    "Change Mix",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Question
-                );
-
-                if (response == DialogResult.Yes)
-                    SaveFileMenu.PerformClick();
-                else if (response == DialogResult.Cancel)
+                if (mixSelector.ShowDialog() != DialogResult.OK)
                     return;
-
-                _pristine = true;
-                _actions.Clear();
             }
-           
-            using (var mixSelector = new MixSelectorForm())
+
+            string created = AssetManager.MixName;
+            AssetManager.Initialize(AssetManager.GamePath);
+            SelectView(created, false);
+        }
+
+        private void OnDeleteMixFileMenuClick(object sender, EventArgs e)
+        {
+            if (!CanEdit)
+                return;
+
+            var prompt = MessageBox.Show(
+                $"Delete the mix \"{AssetManager.MixName}\" with all its songs and files?",
+                "Delete mix",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning
+            );
+
+            if (prompt != DialogResult.Yes)
+                return;
+
+            try
             {
+                Directory.Delete(AssetManager.MixPath, true);
+                _actions.Clear();
+                _pristine = true;
+
                 AssetManager.Initialize(AssetManager.GamePath);
-                if (mixSelector.ShowDialog() == DialogResult.OK)
-                    Reload();
+                var next = AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+                SelectView(next ?? ViewAll, false);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Delete mix", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -260,7 +600,7 @@ namespace VoxCharger
                     return;
 
                 AssetManager.SetMixTagId(tagId);
-                _pristine = false;
+                MarkDirty();
             }
         }
 
@@ -317,11 +657,10 @@ namespace VoxCharger
                     QueueAction("Renumber", action);
 
                 if (moves.Count > 0)
-                    _pristine = false;
+                    MarkDirty();
 
                 ApplyCurrentSort();
-                if (MusicListBox.SelectedItem is VoxHeader header)
-                    IdTextBox.Text = header.Id.ToString();
+                ShowSelection();
 
                 string summary;
                 if (startId <= 0)
@@ -344,101 +683,313 @@ namespace VoxCharger
             _actions[key].Enqueue(action);
         }
 
-        private void OnDeleteMixFileMenuClick(object sender, EventArgs e)
+        private void OnSaveButtonClick(object sender, EventArgs e)
         {
-            var prompt = MessageBox.Show(
-                $"Are you sure want to delete \"{AssetManager.MixName}\"?",
-                "Delete Mix",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning
-            );
+            SaveMix();
+        }
 
-            if (prompt == DialogResult.Yes)
+        private void SaveMix()
+        {
+            if (!CanEdit)
+                return;
+
+            try
             {
-                try
+                Save(AssetManager.MdbFilename);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Save", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void OnAboutHelpMenuClick(object sender, EventArgs e)
+        {
+            using (var about = new AboutForm())
+                about.ShowDialog();
+        }
+        #endregion
+
+        #region --- Songs ---
+        private void OnAddNewMenuClick(object sender, EventArgs e)
+        {
+            string defaultAscii = AssetManager.MixName.ToLower().Replace(" ", string.Empty);
+            var duplicates = new List<VoxHeader>();
+            foreach (var h in AssetManager.Headers)
+            {
+                if (h.Ascii.StartsWith(defaultAscii))
+                    duplicates.Add(h);
+            }
+
+            if (duplicates.Count > 0)
+            {
+                duplicates.Sort((a, b) => a.Ascii.CompareTo(b.Ascii));
+                string ascii = $"{defaultAscii}_01";
+                int counter = 1;
+                foreach (var h in duplicates)
                 {
-                    FileMenu.Enabled = OpenButton.Enabled = false;
-                    Directory.Delete(AssetManager.MixPath, true);
-
-                    PathTextBox.Text = "";
-                    MetadataGroupBox.Enabled = false;
-                    MusicListBox.Items.Clear();
-
-                    DisableUi();
-                    ResetEditor();
-
-                    AssetManager.Initialize(AssetManager.GamePath);
-                    OnChangeMixFileMenuClick(sender, e);
+                    if (h.Ascii == ascii)
+                        ascii = $"{defaultAscii}_{++counter:D2}";
+                    else
+                        break;
                 }
-                catch (Exception ex)
+
+                defaultAscii = ascii;
+            }
+
+            var header = new VoxHeader()
+            {
+                Title            = "Untitled",
+                TitleYomigana    = "ダミー", // dummy
+                Ascii            = defaultAscii,
+                Artist           = "Unknown",
+                ArtistYomigana   = "ダミー", // dummy 
+                Version          = GameVersion.Nabla,
+                InfVersion       = InfiniteVersion.Mxm,
+                BackgroundId     = short.Parse(ConverterForm.LastBackground),
+                GenreId          = 16,
+                BpmMin           = 1,
+                BpmMax           = 1,
+                Volume           = 91,
+                DistributionDate = DateTime.Now,
+                Levels = new Dictionary<Difficulty, VoxLevelHeader>()
                 {
-                    MessageBox.Show(
-                        ex.Message,
-                        "Delete Mix",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error
-                    );
+                    { Difficulty.Infinite, new VoxLevelHeader() {} }
                 }
-                finally
+            };
+
+            MarkDirty();
+            AssetManager.Headers.Add(header);
+            ApplyCurrentSort();
+            MusicListBox.SelectedItem = header;
+        }
+
+        private void OnSingleImportMenuClick(object sender, EventArgs e)
+        {
+            using (var browser = new OpenFileDialog())
+            {
+                browser.Filter = "KShoot Mania Chart|*.ksh";
+                browser.CheckFileExists = true;
+
+                if (browser.ShowDialog() != DialogResult.OK)
+                    return;
+
+                using (var converter = new ConverterForm(browser.FileName, ConvertMode.Importer))
                 {
-                    FileMenu.Enabled = OpenButton.Enabled = true;
+                    if (converter.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    var header = converter.Result;
+                    if (!_actions.ContainsKey(header.Ascii))
+                        _actions[header.Ascii] = new Queue<Action>();
+
+                    MarkDirty();
+                    AssetManager.Headers.Add(header);
+                    ApplyCurrentSort();
+
+                    _actions[header.Ascii].Enqueue(converter.Action);
                 }
             }
         }
 
-        // Export the current mix as a portable JSON manifest of ksm.dev URLs.
-        // Charts that were imported from non-ksm.dev sources (manual KSH file
-        // / new-from-blank / vox-only) won't be in the URL store and so are
-        // skipped — there's nothing the importer could do with them.
-        private void OnExportMixFileMenuClick(object sender, EventArgs e)
+        // Import a chart straight from a ksm.dev song URL. Reuses the
+        // existing single-import flow so the user gets the same metadata
+        // confirmation form, audio normalization, and lead-in/tail policy
+        // ConverterForm runs for a local .ksh — they just don't have to
+        // download and unzip the chart manually.
+        //
+        // Accepts URLs in any of these shapes:
+        //   https://ksm.dev/songs/<uuid>
+        //   https://ksm.dev/songs/<uuid>/
+        //   https://ksm.dev/songs/<uuid>/download
+        // KsmDownloader.NormalizeDownloadUrl appends /download as needed.
+        private void OnImportKsmDevMenuClick(object sender, EventArgs e)
         {
-            if (string.IsNullOrEmpty(AssetManager.MixPath))
-                return;
+            string url;
+            using (var prompt = new InputForm("Import from ksm.dev", "Paste a ksm.dev song URL:"))
+            {
+                if (prompt.ShowDialog() != DialogResult.OK)
+                    return;
+                url = prompt.Value;
+            }
 
-            var urlMap = MixUrlStore.Load(AssetManager.MixPath);
-            if (urlMap.Count == 0)
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
                 MessageBox.Show(
-                    "No ksm.dev URLs are recorded for this mix.\n\n" +
-                    "Export only includes charts that were imported via " +
-                    "\"Import from ksm.dev URL..\" — manually-imported KSH " +
-                    "files have no URL to export.",
-                    "Export Mix",
+                    "URL must start with http:// or https://",
+                    "Invalid URL",
                     MessageBoxButtons.OK,
-                    MessageBoxIcon.Information
+                    MessageBoxIcon.Warning
                 );
                 return;
             }
 
-            using (var browser = new SaveFileDialog())
+            string tempDir = null;
+            string kshFile = null;
+            Exception downloadError = null;
+            using (var loader = new LoadingForm())
             {
-                browser.Filter   = "Mix manifest (*.json)|*.json|All Files|*.*";
-                browser.FileName = (AssetManager.MixName ?? "mix") + "_manifest.json";
-                browser.Title    = "Export Mix as ksm.dev URL list";
-                if (browser.ShowDialog() != DialogResult.OK)
+                loader.SetAction(dialog =>
+                {
+                    try
+                    {
+                        dialog.SetStatus("Downloading from ksm.dev...");
+                        dialog.SetProgress(20f);
+                        using (var dl = new KsmDownloader())
+                        {
+                            tempDir = dl.DownloadAndExtract(url);
+                        }
+                        dialog.SetStatus("Locating chart...");
+                        dialog.SetProgress(80f);
+                        kshFile = KsmDownloader.FindKshFile(tempDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Bubble out via captured variable; LoadingForm
+                        // refuses to close while _completed is false, so
+                        // we must always call Complete() in finally.
+                        downloadError = ex;
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                });
+
+                loader.ShowDialog();
+            }
+
+            if (downloadError != null)
+            {
+                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
+                MessageBox.Show(
+                    "Download failed:\n" + downloadError.Message,
+                    "ksm.dev Import",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+                return;
+            }
+
+            if (kshFile == null)
+            {
+                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
+                MessageBox.Show(
+                    "The downloaded archive did not contain a .ksh file.",
+                    "ksm.dev Import",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            try
+            {
+                using (var converter = new ConverterForm(kshFile, ConvertMode.Importer))
+                {
+                    if (converter.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    var header = converter.Result;
+                    if (!_actions.ContainsKey(header.Ascii))
+                        _actions[header.Ascii] = new Queue<Action>();
+
+                    MarkDirty();
+                    AssetManager.Headers.Add(header);
+                    ApplyCurrentSort();
+
+                    _actions[header.Ascii].Enqueue(converter.Action);
+
+                    // Remember the source URL so the user can later reconvert
+                    // straight from ksm.dev or export the mix as a manifest.
+                    MixUrlStore.SetUrl(AssetManager.MixPath, header.Id, url);
+                }
+            }
+            finally
+            {
+                // ConverterForm.Action copies the chart files into the
+                // mix's music dir (or runs deferred), so by the time we
+                // reach here it's safe to drop the temp extraction.
+                KsmDownloader.Cleanup(tempDir);
+            }
+        }
+
+        private void OnBulkImportKshMenuClick(object sender, EventArgs e)
+        {
+            using (var browser = new CommonOpenFileDialog())
+            {
+                browser.IsFolderPicker = true;
+                browser.Multiselect    = false;
+
+                if (browser.ShowDialog() != CommonFileDialogResult.Ok)
                     return;
 
-                try
+                using (var converter = new ConverterForm(browser.FileName, ConvertMode.BulkImporter))
                 {
-                    var manifest = MixManifest.Build(AssetManager.MixName, AssetManager.Headers, urlMap);
-                    MixManifest.Save(browser.FileName, manifest);
+                    if (converter.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    foreach (var header in converter.ResultSet)
+                        AssetManager.Headers.Add(header);
+
+                    // Bulk import already wrote the assets, save so the db matches what's on disk
+                    ApplyCurrentSort();
+                    if (converter.ResultSet.Length > 0)
+                        Save(AssetManager.MdbFilename);
+
+                    string skipped = converter.SkippedCount > 0 ? $", {converter.SkippedCount} skipped (already in this mix)" : string.Empty;
                     MessageBox.Show(
-                        $"Exported {manifest.charts.Count} chart(s) to:\n{browser.FileName}",
-                        "Export Mix",
+                        $"{converter.ResultSet.Length} song(s) imported{skipped}.",
+                        "Bulk Import",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information
                     );
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(
-                        "Export failed:\n" + ex.Message,
-                        "Export Mix",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error
-                    );
+                    WarnJacketLimit();
                 }
             }
+        }
+
+        // From JSON: an Asphyxia curated list (songs with ksm.dev ids) or a mix manifest (charts with URLs)
+        private void OnImportJsonMenuClick(object sender, EventArgs e)
+        {
+            if (!CanEdit)
+                return;
+
+            string path;
+            using (var browser = new OpenFileDialog())
+            {
+                browser.Filter = "Song lists (*.json)|*.json|All Files|*.*";
+                browser.Title  = "Add songs from a JSON list";
+                if (browser.ShowDialog() != DialogResult.OK)
+                    return;
+                path = browser.FileName;
+            }
+
+            string text;
+            try
+            {
+                text = File.ReadAllText(path);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Add songs", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (text.Contains("\"songs\""))
+                ImportAsphyxiaList(path);
+            else if (text.Contains("\"charts\""))
+                ImportMixManifest(path);
+            else
+                MessageBox.Show(
+                    "This file is neither an Asphyxia song list nor a VoxCharger mix manifest.",
+                    "Add songs",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
         }
 
         // Read a manifest JSON, download every URL into the system temp dir,
@@ -450,20 +1001,11 @@ namespace VoxCharger
         // After the bulk import finishes, we walk the imported headers and
         // record their URLs against the new music ids in the sidecar so
         // reconvert-from-URL still works on the freshly-imported mix.
-        private void OnImportMixFileMenuClick(object sender, EventArgs e)
+        private void ImportMixManifest(string manifestPath)
         {
             if (string.IsNullOrEmpty(AssetManager.MixPath))
                 return;
 
-            string manifestPath;
-            using (var browser = new OpenFileDialog())
-            {
-                browser.Filter = "Mix manifest (*.json)|*.json|All Files|*.*";
-                browser.Title  = "Import Mix from manifest";
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-                manifestPath = browser.FileName;
-            }
 
             MixManifest.Manifest manifest;
             try
@@ -622,7 +1164,7 @@ namespace VoxCharger
         // server assigned. Use case is rebuilding a client mix without
         // having to round-trip through the Asphyxia server's filesystem
         // copy of music_db.merged.xml.
-        private void OnImportAsphyxiaMenuClick(object sender, EventArgs e)
+        private void ImportAsphyxiaList(string listPath)
         {
             if (string.IsNullOrEmpty(AssetManager.MixPath))
             {
@@ -635,15 +1177,6 @@ namespace VoxCharger
                 return;
             }
 
-            string listPath;
-            using (var browser = new OpenFileDialog())
-            {
-                browser.Filter = "Asphyxia curated list (*.json)|*.json|All Files|*.*";
-                browser.Title  = "Import Asphyxia curated list";
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-                listPath = browser.FileName;
-            }
 
             AsphyxiaList.Bundle bundle;
             try
@@ -745,8 +1278,9 @@ namespace VoxCharger
 
             // Headers were added directly to AssetManager.Headers in the
             // background thread; refresh the in-memory listbox to match.
-            LoadMusicDb();
+            ApplyCurrentSort();
             _pristine = true;
+            UpdateUi();
 
             ShowImportSummary("Import Asphyxia list", result.Imported, result.Errors);
             WarnJacketLimit();
@@ -761,7 +1295,7 @@ namespace VoxCharger
 
             MessageBox.Show(
                 $"{above} song(s) in this mix have an ID above {AssetManager.MaxJacketMusicId}. They play, but the game shows no jacket for them at song select " +
-                "(its jacket loader stops at the tutorial ID 9001). Use File > Set Starting ID to move the mix below that.",
+                "(its jacket loader stops at the tutorial ID 9001). Use Tools > Set starting ID to move the mix below that.",
                 "Jacket limit",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning
@@ -780,28 +1314,12 @@ namespace VoxCharger
             return !string.IsNullOrEmpty(url);
         }
 
-        // Keep both reconvert affordances (the visible button next to the
-        // music id and the right-click context menu item) in sync with the
-        // current selection's URL status. Called from selection change,
-        // context menu popup, and after import / remove paths that change
-        // which URLs are recorded.
         private void RefreshReconvertControls()
         {
-            bool hasUrl = SelectedSongHasReconvertUrl();
-            if (ReconvertButton != null)
-                ReconvertButton.Enabled = hasUrl;
-            if (ReconvertFromUrlMenu != null)
-            {
-                ReconvertFromUrlMenu.Enabled = hasUrl;
-                ReconvertFromUrlMenu.Text = hasUrl
-                    ? "Reconvert from ksm.dev URL"
-                    : "Reconvert from ksm.dev URL (no URL stored)";
-            }
-        }
-
-        private void OnMusicListContextMenuPopup(object sender, EventArgs e)
-        {
-            RefreshReconvertControls();
+            bool hasUrl = CanEdit && SelectedSongHasReconvertUrl();
+            ReconvertButton.Visible = hasUrl;
+            _reconvertItem.Enabled  = hasUrl;
+            _reconvertItem.Text     = hasUrl ? "Reconvert from ksm.dev" : "Reconvert from ksm.dev (no URL stored)";
         }
 
         // Pull the latest version of the selected chart from its stored
@@ -847,7 +1365,6 @@ namespace VoxCharger
             // music folder and the deferred delete is harmless either way
             // since it only runs on Save.
             AssetManager.Headers.Remove(header);
-            MusicListBox.Items.Remove(header);
             _actions[header.Ascii] = new Queue<Action>();
             _actions[header.Ascii].Enqueue(() => AssetManager.DeleteAssets(header));
             // Save now so the deferred delete happens before re-import.
@@ -925,16 +1442,14 @@ namespace VoxCharger
                     if (!_actions.ContainsKey(newHeader.Ascii))
                         _actions[newHeader.Ascii] = new Queue<Action>();
 
-                    _pristine = false;
+                    MarkDirty();
                     AssetManager.Headers.Add(newHeader);
-                    MusicListBox.Items.Add(newHeader);
                     ApplyCurrentSort();
 
                     _actions[newHeader.Ascii].Enqueue(converter.Action);
                     MixUrlStore.SetUrl(AssetManager.MixPath, newHeader.Id, url);
 
-                    if (_autosave)
-                        Save(AssetManager.MdbFilename);
+                    Save(AssetManager.MdbFilename);
                 }
             }
             finally
@@ -972,12 +1487,6 @@ namespace VoxCharger
             return sb.ToString();
         }
 
-        private void OnAutosaveEditMenuClick(object sender, EventArgs e)
-        {
-            _autosave = !_autosave;
-            AutosaveEditMenu.Checked = _autosave;
-        }
-
         private void OnExplorerEditMenuClick(object sender, EventArgs e)
         {
             var header = MusicListBox.SelectedItem as VoxHeader;
@@ -988,673 +1497,58 @@ namespace VoxCharger
             Process.Start("explorer.exe", path);
         }
 
-        private void OnSingleConvertToolsMenuClick(object sender, EventArgs e)
+        private void OnMusicListBoxKeyDown(object sender, KeyEventArgs e)
         {
-            using (var browser = new OpenFileDialog())
+            if (e.KeyCode == Keys.Delete && CanEdit)
             {
-                browser.Filter = "Kshoot Chart File|*.ksh";
-                browser.CheckFileExists = true;
-
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-
-                using (var converter = new ConverterForm(browser.FileName, ConvertMode.Converter))
-                    converter.ShowDialog();
+                OnRemoveButtonClick(sender, e);
+                e.Handled = true;
             }
         }
 
-        private void OnBulkConvertToolsMenuClick(object sender, EventArgs e)
+        private void OnRemoveButtonClick(object sender, EventArgs e)
         {
-            using (var browser = new CommonOpenFileDialog())
-            {
-                browser.IsFolderPicker = true;
-                browser.Multiselect    = false;
-
-                if (browser.ShowDialog() != CommonFileDialogResult.Ok)
-                    return;
-
-                using (var converter = new ConverterForm(browser.FileName, ConvertMode.Converter))
-                    converter.ShowDialog();
-            }
-        }
-
-        private void OnSingleVoxConvertToolsMenuClick(object sender, EventArgs e)
-        {
-            using (var browser = new OpenFileDialog())
-            {
-                browser.Filter = "Sound Voltex Chart File|*.vox";
-                browser.CheckFileExists = true;
-
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-
-                using (var converter = new ConverterForm(browser.FileName, ConvertMode.ReverseConverter))
-                    converter.ShowDialog();
-            }
-        }
-
-        private void OnBulkVoxConvertToolsMenuClick(object sender, EventArgs e)
-        {
-            using (var browser = new CommonOpenFileDialog())
-            {
-                browser.IsFolderPicker = true;
-                browser.Multiselect    = false;
-
-                if (browser.ShowDialog() != CommonFileDialogResult.Ok)
-                    return;
-
-                using (var converter = new ConverterForm(browser.FileName, ConvertMode.BulkReverseConverter))
-                    converter.ShowDialog();
-            }
-        }
-
-        private void OnMusicFileBuilderClick(object sender, EventArgs e)
-        {
-            using (var browser  = new OpenFileDialog())
-            using (var exporter = new SaveFileDialog())
-            {
-                browser.Filter = "Audio Files|*.wav;*.ogg;*.mp3;*.flac";
-                browser.CheckFileExists = true;
-
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-
-                exporter.Filter = "2DX File|*.2dx";
-                if (exporter.ShowDialog() != DialogResult.OK)
-                    return;
-
-                string source = browser.FileName;
-                string output = exporter.FileName;
-                string error = string.Empty;
-                
-                using (var loader = new LoadingForm())
-                {
-                    loader.SetAction(dialog =>
-                    {
-                        try
-                        {
-                            dialog.SetStatus("Processing assets..");
-                            DxEncoder.Encode(new[] { source }, output);
-
-                            dialog.SetProgress(100);
-                            dialog.DialogResult = DialogResult.OK;
-                            dialog.Complete();
-                        }
-                        catch (Exception ex)
-                        {
-                            error = ex.Message;
-
-                            dialog.DialogResult = DialogResult.Abort;
-                            dialog.Complete();
-                        }
-                    });
-
-                    if (loader.ShowDialog() == DialogResult.OK)
-                    {
-                        MessageBox.Show(
-                            "Audio file has been converted successfully",
-                            "2DX Builder",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information
-                        );
-                    }
-                    else
-                    {
-                        MessageBox.Show(
-                            $"Failed to convert audio file.\n{error}",
-                            "2DX Builder",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error
-                        );
-                    }
-                }
-            }
-        }
-
-        private void OnS3VFileBuilderClick(object sender, EventArgs e)
-        {
-            using (var browser  = new OpenFileDialog())
-            using (var exporter = new SaveFileDialog())
-            {
-                browser.Filter = "Audio Files|*.wav;*.ogg;*.mp3;*.flac";
-                browser.CheckFileExists = true;
-
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-
-                exporter.Filter = "S3V File|*.s3v";
-                if (exporter.ShowDialog() != DialogResult.OK)
-                    return;
-
-                string source = browser.FileName;
-                string output = exporter.FileName;
-                string error = string.Empty;
-
-                using (var loader = new LoadingForm())
-                {
-                    loader.SetAction(dialog =>
-                    {
-                        try
-                        {
-                            dialog.SetStatus("Processing assets..");
-                            S3VTool.Convert(source, output, AudioImportOptions.Default);
-
-                            dialog.SetProgress(100);
-                            dialog.DialogResult = DialogResult.OK;
-                            dialog.Complete();
-                        }
-                        catch (Exception ex)
-                        {
-                            error = ex.Message;
-
-                            dialog.DialogResult = DialogResult.Abort;
-                            dialog.Complete();
-                        }
-                    });
-
-                    if (!File.Exists(S3VTool.ConverterFileName))
-                        S3VTool.ConverterFileName = "ffmpeg.exe";
-
-                    if (!File.Exists(S3VTool.ConverterFileName))
-                    {
-                        using (var ofd = new OpenFileDialog())
-                        {
-                            ofd.Filter = "ffmpeg.exe | ffmpeg.exe";
-                            ofd.CheckFileExists = true;
-
-                            if (ofd.ShowDialog() == DialogResult.OK)
-                                S3VTool.ConverterFileName = ofd.FileName;
-                        }
-                    }
-
-                    if (loader.ShowDialog() == DialogResult.OK)
-                    {
-                        MessageBox.Show(
-                            "Audio file has been converted successfully",
-                            "S3V Builder",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information
-                        );
-                    }
-                    else
-                    {
-                        MessageBox.Show(
-                            $"Failed to convert audio file.\n{error}",
-                            "S3V Builder",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error
-                        );
-                    }
-                }
-            }
-        }
-
-        private void OnRemoteMixesToolsMenuClick(object sender, EventArgs e)
-        {
-            using (var remoteForm = new RemoteMixForm())
-            {
-                if (remoteForm.ShowDialog() != DialogResult.OK)
-                    return;
-
-                if (string.IsNullOrEmpty(AssetManager.MixPath))
-                    return;
-
-                foreach (var header in remoteForm.ImportedHeaders)
-                {
-                    AssetManager.Headers.Add(header);
-                    MusicListBox.Items.Add(header);
-
-                    if (remoteForm.ImportedActions.ContainsKey(header.Ascii))
-                    {
-                        if (!_actions.ContainsKey(header.Ascii))
-                            _actions[header.Ascii] = new Queue<Action>();
-
-                        var queue = remoteForm.ImportedActions[header.Ascii];
-                        while (queue.Count > 0)
-                            _actions[header.Ascii].Enqueue(queue.Dequeue());
-                    }
-                }
-
-                ApplyCurrentSort();
-                _pristine = false;
-                if (_autosave)
-                    Save(AssetManager.MdbFilename);
-            }
-        }
-
-        private void OnRebuildThumbnailsToolsMenuClick(object sender, EventArgs e)
-        {
-            if (string.IsNullOrEmpty(AssetManager.MixName))
-            {
-                MessageBox.Show(this, "No mix is loaded. Open or create a mix first.", "Rebuild Thumbnails",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            ThumbnailRebuilder.Result result = null;
-            using (var loader = new LoadingForm())
-            {
-                loader.SetAction(dialog =>
-                {
-                    try
-                    {
-                        result = ThumbnailRebuilder.Run(new AsphyxiaImporter.Progress
-                        {
-                            Status  = s => dialog.SetStatus(s),
-                            Percent = p => dialog.SetProgress(p),
-                        });
-                    }
-                    finally
-                    {
-                        dialog.Complete();
-                    }
-                });
-                loader.ShowDialog();
-            }
-
-            if (result == null)
+            if (!CanEdit || !(MusicListBox.SelectedItem is VoxHeader header))
                 return;
 
-            string errors = result.Errors.Count > 0 ? "\n\n" + string.Join("\n", result.Errors.Take(20)) : string.Empty;
-            MessageBox.Show(
-                $"{result.Rebuilt} thumbnail(s) rebuilt, {result.Removed} stale file(s) removed, {result.Missing} chart(s) without jacket, {result.Errors.Count} error(s).\n\n" +
-                $"Delete data_mods\\_cache\\graphics on the game PC so ifs_layeredfs picks up the new layout.{errors}",
-                "Rebuild Thumbnails",
-                MessageBoxButtons.OK,
-                result.Errors.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information
+            var response = MessageBox.Show(
+                $"Remove \"{VoxHeader.WithDecodedSymbols(header.Title)}\" from this mix? Its files are deleted when you save.",
+                "Remove song",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning
             );
-        }
 
-        private void OnRecomputeRadarToolsMenuClick(object sender, EventArgs e)
-        {
-            if (string.IsNullOrEmpty(AssetManager.MixName))
-            {
-                MessageBox.Show(this, "No mix is loaded. Open or create a mix first.", "Recompute Radar",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            RadarRecalculator.Result result = null;
-            using (var loader = new LoadingForm())
-            {
-                loader.SetAction(dialog =>
-                {
-                    try
-                    {
-                        result = RadarRecalculator.Run(new AsphyxiaImporter.Progress
-                        {
-                            Status  = s => dialog.SetStatus(s),
-                            Percent = p => dialog.SetProgress(p),
-                        });
-                    }
-                    finally
-                    {
-                        dialog.Complete();
-                    }
-                });
-                loader.ShowDialog();
-            }
-
-            if (result == null)
+            if (response != DialogResult.Yes)
                 return;
 
-            if (result.Updated > 0)
-                Save(AssetManager.MdbFilename);
+            int index = MusicListBox.SelectedIndex;
+            AssetManager.Headers.Remove(header);
+            // Drop the sidecar URL too so a stale id doesn't survive into a future export
+            MixUrlStore.RemoveUrl(AssetManager.MixPath, header.Id);
 
-            string errors = result.Errors.Count > 0 ? "\n\n" + string.Join("\n", result.Errors.Take(20)) : string.Empty;
-            MessageBox.Show(
-                $"Radar recomputed for {result.Updated} chart(s), {result.Missing} without chart file, {result.Errors.Count} error(s).{errors}",
-                "Recompute Radar",
-                MessageBoxButtons.OK,
-                result.Errors.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information
-            );
-        }
+            // Pending changes of this song are moot, its assets are deleted
+            _actions[header.Ascii] = new Queue<Action>();
+            _actions[header.Ascii].Enqueue(() => AssetManager.DeleteAssets(header));
 
-        private void OnRepairMixToolsMenuClick(object sender, EventArgs e)
-        {
-            if (string.IsNullOrEmpty(AssetManager.MixPath))
-            {
-                MessageBox.Show(this, "No mix is loaded. Open or create a mix first.", "Repair Mix",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            using (var form = new RepairForm())
-                form.ShowDialog(this);
-
-            // Repair may have updated music_db; refresh the visible list to
-            // pick up any radar/jacket changes from re-exported entries.
-            MusicListBox.Items.Clear();
-            foreach (var h in AssetManager.Headers)
-                MusicListBox.Items.Add(h);
             ApplyCurrentSort();
-        }
+            if (MusicListBox.Items.Count > 0)
+                MusicListBox.SelectedIndex = Math.Min(index, MusicListBox.Items.Count - 1);
 
-        private void OnAboutHelpMenuClick(object sender, EventArgs e)
-        {
-            using (var about = new AboutForm())
-                about.ShowDialog();
-        }
-
-        private void OnExitFileMenuClick(object sender, EventArgs e)
-        {
-            Application.Exit();
+            MarkDirty();
+            ShowSelection();
         }
         #endregion
 
-        #region -- Editor ---
-        private void OnOpenButtonClick(object sender, EventArgs e)
-        {
-            try
-            {
-                if (!_pristine && SaveFileMenu.Enabled)
-                {
-                    var response = MessageBox.Show(
-                        "Save file before open another mix?",
-                        "Open Mix",
-                        MessageBoxButtons.YesNoCancel,
-                        MessageBoxIcon.Question
-                    );
-
-                    if (response == DialogResult.Yes)
-                        SaveFileMenu.PerformClick();
-                    else if (response == DialogResult.Cancel)
-                        return;
-
-                    _pristine = true;
-                    _actions.Clear();
-                }
-
-                using (var browser = new CommonOpenFileDialog())
-                using (var mixSelector = new MixSelectorForm())
-                {
-                    browser.IsFolderPicker = true;
-                    if (browser.ShowDialog() == CommonFileDialogResult.Ok)
-                    {
-                        AssetManager.Initialize(browser.FileName);
-
-                        PathTextBox.Text = string.Empty;
-                        MusicListBox.Items.Clear();
-
-                        ResetEditor();
-
-                        if (mixSelector.ShowDialog() == DialogResult.OK)
-                            Reload();
-                    }
-                }
-            } 
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void OnAddNewMenuClick(object sender, EventArgs e)
-        {
-            string defaultAscii = AssetManager.MixName.ToLower().Replace(" ", string.Empty);
-            var duplicates = new List<VoxHeader>();
-            foreach (var h in AssetManager.Headers)
-            {
-                if (h.Ascii.StartsWith(defaultAscii))
-                    duplicates.Add(h);
-            }
-
-            if (duplicates.Count > 0)
-            {
-                duplicates.Sort((a, b) => a.Ascii.CompareTo(b.Ascii));
-                string ascii = $"{defaultAscii}_01";
-                int counter = 1;
-                foreach (var h in duplicates)
-                {
-                    if (h.Ascii == ascii)
-                        ascii = $"{defaultAscii}_{++counter:D2}";
-                    else
-                        break;
-                }
-
-                defaultAscii = ascii;
-            }
-
-            var header = new VoxHeader()
-            {
-                Title            = "Untitled",
-                TitleYomigana    = "ダミー", // dummy
-                Ascii            = defaultAscii,
-                Artist           = "Unknown",
-                ArtistYomigana   = "ダミー", // dummy 
-                Version          = GameVersion.Nabla,
-                InfVersion       = InfiniteVersion.Mxm,
-                BackgroundId     = short.Parse(ConverterForm.LastBackground),
-                GenreId          = 16,
-                BpmMin           = 1,
-                BpmMax           = 1,
-                Volume           = 91,
-                DistributionDate = DateTime.Now,
-                Levels = new Dictionary<Difficulty, VoxLevelHeader>()
-                {
-                    { Difficulty.Infinite, new VoxLevelHeader() {} }
-                }
-            };
-
-            _pristine = false;
-            AssetManager.Headers.Add(header);
-            MusicListBox.Items.Add(header);
-            ApplyCurrentSort();
-        }
-
-        private void OnSingleImportMenuClick(object sender, EventArgs e)
-        {
-            using (var browser = new OpenFileDialog())
-            {
-                browser.Filter = "KShoot Mania Chart|*.ksh";
-                browser.CheckFileExists = true;
-
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-
-                using (var converter = new ConverterForm(browser.FileName, ConvertMode.Importer))
-                {
-                    if (converter.ShowDialog() != DialogResult.OK)
-                        return;
-
-                    var header = converter.Result;
-                    if (!_actions.ContainsKey(header.Ascii))
-                        _actions[header.Ascii] = new Queue<Action>();
-
-                    _pristine = false;
-                    AssetManager.Headers.Add(header);
-                    MusicListBox.Items.Add(header);
-                    ApplyCurrentSort();
-
-                    _actions[header.Ascii].Enqueue(converter.Action);
-                    if (_autosave)
-                        Save(AssetManager.MdbFilename);
-                }
-            }
-        }
-
-        // Import a chart straight from a ksm.dev song URL. Reuses the
-        // existing single-import flow so the user gets the same metadata
-        // confirmation form, audio normalization, and lead-in/tail policy
-        // ConverterForm runs for a local .ksh — they just don't have to
-        // download and unzip the chart manually.
-        //
-        // Accepts URLs in any of these shapes:
-        //   https://ksm.dev/songs/<uuid>
-        //   https://ksm.dev/songs/<uuid>/
-        //   https://ksm.dev/songs/<uuid>/download
-        // KsmDownloader.NormalizeDownloadUrl appends /download as needed.
-        private void OnImportKsmDevMenuClick(object sender, EventArgs e)
-        {
-            string url;
-            using (var prompt = new InputForm("Import from ksm.dev", "Paste a ksm.dev song URL:"))
-            {
-                if (prompt.ShowDialog() != DialogResult.OK)
-                    return;
-                url = prompt.Value;
-            }
-
-            if (string.IsNullOrWhiteSpace(url))
-                return;
-            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            {
-                MessageBox.Show(
-                    "URL must start with http:// or https://",
-                    "Invalid URL",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning
-                );
-                return;
-            }
-
-            string tempDir = null;
-            string kshFile = null;
-            Exception downloadError = null;
-            using (var loader = new LoadingForm())
-            {
-                loader.SetAction(dialog =>
-                {
-                    try
-                    {
-                        dialog.SetStatus("Downloading from ksm.dev...");
-                        dialog.SetProgress(20f);
-                        using (var dl = new KsmDownloader())
-                        {
-                            tempDir = dl.DownloadAndExtract(url);
-                        }
-                        dialog.SetStatus("Locating chart...");
-                        dialog.SetProgress(80f);
-                        kshFile = KsmDownloader.FindKshFile(tempDir);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Bubble out via captured variable; LoadingForm
-                        // refuses to close while _completed is false, so
-                        // we must always call Complete() in finally.
-                        downloadError = ex;
-                    }
-                    finally
-                    {
-                        dialog.Complete();
-                    }
-                });
-
-                loader.ShowDialog();
-            }
-
-            if (downloadError != null)
-            {
-                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
-                MessageBox.Show(
-                    "Download failed:\n" + downloadError.Message,
-                    "ksm.dev Import",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error
-                );
-                return;
-            }
-
-            if (kshFile == null)
-            {
-                if (tempDir != null) KsmDownloader.Cleanup(tempDir);
-                MessageBox.Show(
-                    "The downloaded archive did not contain a .ksh file.",
-                    "ksm.dev Import",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning
-                );
-                return;
-            }
-
-            try
-            {
-                using (var converter = new ConverterForm(kshFile, ConvertMode.Importer))
-                {
-                    if (converter.ShowDialog() != DialogResult.OK)
-                        return;
-
-                    var header = converter.Result;
-                    if (!_actions.ContainsKey(header.Ascii))
-                        _actions[header.Ascii] = new Queue<Action>();
-
-                    _pristine = false;
-                    AssetManager.Headers.Add(header);
-                    MusicListBox.Items.Add(header);
-                    ApplyCurrentSort();
-
-                    _actions[header.Ascii].Enqueue(converter.Action);
-
-                    // Remember the source URL so the user can later reconvert
-                    // straight from ksm.dev or export the mix as a manifest.
-                    MixUrlStore.SetUrl(AssetManager.MixPath, header.Id, url);
-
-                    if (_autosave)
-                        Save(AssetManager.MdbFilename);
-                }
-            }
-            finally
-            {
-                // ConverterForm.Action copies the chart files into the
-                // mix's music dir (or runs deferred), so by the time we
-                // reach here it's safe to drop the temp extraction.
-                KsmDownloader.Cleanup(tempDir);
-            }
-        }
-
-        private void OnBulkImportKshMenuClick(object sender, EventArgs e)
-        {
-            using (var browser = new CommonOpenFileDialog())
-            {
-                browser.IsFolderPicker = true;
-                browser.Multiselect    = false;
-
-                if (browser.ShowDialog() != CommonFileDialogResult.Ok)
-                    return;
-
-                using (var converter = new ConverterForm(browser.FileName, ConvertMode.BulkImporter))
-                {
-                    if (converter.ShowDialog() != DialogResult.OK)
-                        return;
-
-                    foreach (var header in converter.ResultSet)
-                        AssetManager.Headers.Add(header);
-
-                    // Bulk import already wrote the assets, save so the db matches what's on disk
-                    ApplyCurrentSort();
-                    if (converter.ResultSet.Length > 0)
-                        Save(AssetManager.MdbFilename);
-
-                    string skipped = converter.SkippedCount > 0 ? $", {converter.SkippedCount} skipped (already in this mix)" : string.Empty;
-                    MessageBox.Show(
-                        $"{converter.ResultSet.Length} song(s) imported{skipped}.",
-                        "Bulk Import",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information
-                    );
-                    WarnJacketLimit();
-                }
-            }
-        }
-
-        // Refresh the MusicListBox from the canonical AssetManager.Headers
-        // collection, applying the current search filter and sort. Called
-        // after every mutation (load, import, remove, rename, search edit,
-        // sort change). The kept name "ApplyCurrentSort" is historical —
-        // every existing call site benefits from the filter step too, so
-        // reusing the same method keeps the call graph straightforward.
-        // O(n) per call; up to a few thousand songs is well below
-        // user-perceptible.
+        #region --- Song list ---
+        // Refresh the list from the current view, applying the search filter and sort
         private void ApplyCurrentSort()
         {
-            if (AssetManager.Headers == null) return;
-
-            var headers = AssetManager.Headers.Where(MatchesSearch);
+            var headers = CurrentHeaders.Where(MatchesSearch);
             IEnumerable<VoxHeader> sorted;
             switch (_sortMode)
             {
                 case SortMode.TitleDesc:
-                    sorted = headers.OrderByDescending(h => h.Title ?? "", StringComparer.OrdinalIgnoreCase);
+                    sorted = headers.OrderByDescending(h => VoxHeader.WithDecodedSymbols(h.Title) ?? "", StringComparer.OrdinalIgnoreCase);
                     break;
                 case SortMode.IdAsc:
                     sorted = headers.OrderBy(h => h.Id);
@@ -1662,36 +1556,32 @@ namespace VoxCharger
                 case SortMode.IdDesc:
                     sorted = headers.OrderByDescending(h => h.Id);
                     break;
-                case SortMode.TitleAsc:
                 default:
-                    sorted = headers.OrderBy(h => h.Title ?? "", StringComparer.OrdinalIgnoreCase);
+                    sorted = headers.OrderBy(h => VoxHeader.WithDecodedSymbols(h.Title) ?? "", StringComparer.OrdinalIgnoreCase);
                     break;
             }
 
             var keep = MusicListBox.SelectedItem;
             MusicListBox.BeginUpdate();
             MusicListBox.Items.Clear();
-            foreach (var h in sorted)
-                MusicListBox.Items.Add(h);
+            MusicListBox.Items.AddRange(sorted.Cast<object>().ToArray());
             if (keep != null)
             {
                 int idx = MusicListBox.Items.IndexOf(keep);
                 if (idx >= 0) MusicListBox.SelectedIndex = idx;
             }
             MusicListBox.EndUpdate();
+
+            if (HeaderPanel != null && _deleteMixItem != null)
+                UpdateUi();
         }
 
         private void SetSortMode(SortMode mode, string label)
         {
             _sortMode = mode;
-            SortButton.Text = "Sort: " + label;
+            SortButton.Text = label;
             ApplyCurrentSort();
         }
-
-        private void OnSortByTitleAscClick(object sender, EventArgs e)  => SetSortMode(SortMode.TitleAsc,  "Title (A → Z)");
-        private void OnSortByTitleDescClick(object sender, EventArgs e) => SetSortMode(SortMode.TitleDesc, "Title (Z → A)");
-        private void OnSortByIdAscClick(object sender, EventArgs e)     => SetSortMode(SortMode.IdAsc,     "Music ID ↑");
-        private void OnSortByIdDescClick(object sender, EventArgs e)    => SetSortMode(SortMode.IdDesc,    "Music ID ↓");
 
         // Substring match across the visible-ish fields. We deliberately
         // include the music id so users can paste an id directly when they
@@ -1715,311 +1605,241 @@ namespace VoxCharger
 
         private void OnSearchTextBoxChanged(object sender, EventArgs e)
         {
-            _searchText = SearchTextBox.Text != null ? SearchTextBox.Text.Trim() : string.Empty;
+            _searchText = SearchBox.Input.Text != null ? SearchBox.Input.Text.Trim() : string.Empty;
             ApplyCurrentSort();
         }
 
-        private void OnMetadataChanged(object sender, EventArgs e)
+        private void OnMusicListBoxSelectedIndexChanged(object sender, EventArgs e)
         {
-            if (sender is TextBox textBox && !textBox.Modified)
-                return;
-
-            if (sender is Control control && !(control is ComboBox) && !control.ContainsFocus)
-                return;
-
-            if (!(MusicListBox.SelectedItem is VoxHeader header))
-                return;
-
-            if (int.TryParse(IdTextBox.Text, out int id))
-            {
-                // Validate ID
-                if (id == header.Id)
-                {
-                }
-                else if (!AssetManager.ValidateMusicId(id) || AssetManager.Headers.Contains(id))
-                {
-                    IdTextBox.Text = header.Id.ToString();
-                    MessageBox.Show("Music ID is already taken", "Duplicate", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-                else if (id < AssetManager.MixStartId)
-                {
-                    IdTextBox.Text = header.Id.ToString();
-                    MessageBox.Show($"Music ID must be at least {AssetManager.MixStartId}, the starting ID of this mix", "Starting ID", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-                else
-                {
-                    // Folder, files, thumbnails, URL sidecar and manifest follow the new id on save
-                    int oldId    = header.Id;
-                    string ascii = header.Ascii;
-                    AssetManager.Headers.ChangeId(header, id);
-                    QueueAction("Renumber", () => AssetManager.RenameMusicAssets(oldId, id, ascii));
-                    _pristine = false;
-                }
-            }
-            else
-                IdTextBox.Text = header.Id.ToString();
-
-            double min = (double)Math.Min(BpmMinNumericBox.Value, BpmMaxNumericBox.Value);
-            double max = (double)Math.Max(BpmMinNumericBox.Value, BpmMaxNumericBox.Value);
-            BpmMinNumericBox.Value = (decimal)min;
-            BpmMaxNumericBox.Value = (decimal)max;
-
-            header.Title            = TitleTextBox.Text;
-            header.TitleYomigana    = TitleYomiganaTextBox.Text;
-            header.Artist           = ArtistTextBox.Text;
-            header.ArtistYomigana   = ArtistYomiganaTextBox.Text;
-            header.BpmMin           = min;
-            header.BpmMax           = max;
-            header.Version          = (GameVersion)(VersionDropDown.SelectedIndex + 1);
-            header.InfVersion       = InfVerDropDown.SelectedIndex == 0 ? InfiniteVersion.Mxm : (InfiniteVersion)(InfVerDropDown.SelectedIndex + 1);
-            header.DistributionDate = DistributionPicker.Value;
-            header.BackgroundId     = short.Parse((BackgroundDropDown.SelectedItem ?? "0").ToString().Split(' ')[0]);
-            header.Volume           = (short)VolumeTrackBar.Value;
-
-            VolumeIndicatorLabel.Text = $"{VolumeTrackBar.Value:#00}%";
-            _pristine = false;
-        }
-
-        private void OnLevelEditButtonClick(object sender, EventArgs e)
-        {
-            if (MusicListBox.SelectedItem == null)
-                return;
-
-            var button = (Button)sender;
-            var difficulty = (Difficulty)int.Parse(button.Tag.ToString());
-            var header = MusicListBox.SelectedItem as VoxHeader;
-
-            using (var editor = new LevelEditorForm(header, difficulty))
-            {
-                if (editor.ShowDialog() == DialogResult.OK)
-                {
-                    // Update the levels in case it's newly added
-                    header.Levels[difficulty] = editor.Result;
-                    if (editor.Action != null)
-                    {
-                        if (!_actions.ContainsKey(header.Ascii))
-                            _actions[header.Ascii] = new Queue<Action>();
-
-                        _actions[header.Ascii].Enqueue(editor.Action);
-                    }
-
-                    if (header.Levels.ContainsKey(Difficulty.Infinite))
-                        InfVerDropDown.Items[0] = "MXM";
-                    else
-                        InfVerDropDown.Items[0] = "--";
-
-                    OnInfVerDropDownSelectedIndexChanged(sender, e);
-
-                    _pristine = false;
-                    LoadJacket(header);
-
-                    if (_autosave)
-                        Save(AssetManager.MdbFilename);
-                }
-            }
-        }
-
-        private void OnInfVerDropDownSelectedIndexChanged(object sender, EventArgs e)
-        {
-            var header = MusicListBox.SelectedItem as VoxHeader;
-            if (header == null || InfVerDropDown.SelectedItem == null)
-                InfEditButton.Text = "--";
-            else if (header.Levels.ContainsKey(Difficulty.Infinite))
-                InfEditButton.Text = InfVerDropDown.SelectedItem.ToString();
-        }
-
-        private void OnImportMusicFileButtonClick(object sender, EventArgs e)
-        {
-            ImportAudioFile();
-        }
-
-        private void OnImportPreviewFileButtonClick(object sender, EventArgs e)
-        {
-            ImportAudioFile(true);
-        }
-
-        private void OnJacketPictureBoxClick(object sender, EventArgs e)
-        {
-            var header = MusicListBox.SelectedItem as VoxHeader;
-            if (header == null)
-                return;
-
-            var control    = (Control)sender;
-            var difficulty = (Difficulty)int.Parse(control.Tag.ToString());
-            if (!header.Levels.ContainsKey(difficulty))
-                return;
-
-            string jacket = $"{AssetManager.GetJacketPath(header, difficulty)}_b.png";
-            if (!File.Exists(jacket))
-            {
-                jacket = $"{AssetManager.GetDefaultJacketPath(header)}_b.png";
-                if (!File.Exists(jacket))
-                    return;
-            }
-
-            using (var image  = Image.FromFile(jacket))
-            using (var viewer = new JacketViewerForm(image))
-                viewer.ShowDialog();
+            ShowSelection();
         }
         #endregion
 
-        #region --- Mix List Management ---
-        private void OnMusicListBoxSelectedIndexChanged(object sender, EventArgs e)
-        {
-            // Always refresh reconvert affordances on selection change so the
-            // visible button matches the new selection's URL status.
-            RefreshReconvertControls();
-
-            if (!(MusicListBox.SelectedItem is VoxHeader header))
-            {
-                MetadataGroupBox.Enabled = false;
-                ResetEditor();
-
-                return;
-            }
-
-            IdTextBox.Text                  = header.Id.ToString();
-            TitleTextBox.Text               = VoxHeader.WithDecodedSymbols(header.Title);
-            TitleYomiganaTextBox.Text       = VoxHeader.WithDecodedSymbols(header.TitleYomigana);
-            ArtistTextBox.Text              = VoxHeader.WithDecodedSymbols(header.Artist);
-            ArtistYomiganaTextBox.Text      = VoxHeader.WithDecodedSymbols(header.ArtistYomigana);
-
-            try
-            {
-                BpmMinNumericBox.Minimum = 1;
-                BpmMaxNumericBox.Minimum = 1;
-
-                BpmMinNumericBox.Value = (decimal)header.BpmMin;
-                BpmMaxNumericBox.Value = (decimal)header.BpmMax;
-
-                BpmMinNumericBox.Enabled = true;
-                BpmMaxNumericBox.Enabled = true;
-            }
-            catch (Exception)
-            {
-                BpmMinNumericBox.Minimum = 0;
-                BpmMaxNumericBox.Minimum = 0;
-                BpmMinNumericBox.Value = 0;
-                BpmMaxNumericBox.Value = 0;
-
-                BpmMinNumericBox.Enabled = false;
-                BpmMaxNumericBox.Enabled = false;
-            }
-
-            try
-            {
-                VersionDropDown.DropDownStyle = ComboBoxStyle.DropDownList;
-                InfVerDropDown.DropDownStyle  = ComboBoxStyle.DropDownList;
-
-                VersionDropDown.SelectedIndex   = (int)(header.Version) - 1;
-                InfVerDropDown.SelectedIndex    = header.InfVersion == InfiniteVersion.Mxm ? 0 : (int)(header.InfVersion) - 1;
-
-                if (header.Levels.ContainsKey(Difficulty.Infinite))
-                    InfVerDropDown.Items[0] = "MXM";
-                else
-                    InfVerDropDown.Items[0] = "--";
-
-                VersionDropDown.Enabled = true;
-                InfVerDropDown.Enabled  = true;
-            }
-            catch (Exception)
-            {
-                VersionDropDown.DropDownStyle = ComboBoxStyle.DropDown;
-                InfVerDropDown.DropDownStyle  = ComboBoxStyle.DropDown;
-
-                VersionDropDown.Text    = "--";
-                VersionDropDown.Enabled = false;
-
-                InfVerDropDown.Text = "--";
-                InfVerDropDown.Enabled  = false;
-            }
-
-            DistributionPicker.Value        = header.DistributionDate;
-            VolumeTrackBar.Value            = header.Volume;
-            BackgroundDropDown.SelectedItem = $"{header.BackgroundId:D2}";
-            VolumeIndicatorLabel.Text       = $"{VolumeTrackBar.Value:#00}%";
-
-            bool safe                          = !string.IsNullOrEmpty(AssetManager.MixName);
-            AddButton.Enabled                  = safe;
-            AddEditMenu.Enabled                = safe;
-            RemoveButton.Enabled               = safe;
-            RemoveEditMenu.Enabled             = safe;
-            ImportAudioEditMenu.Enabled        = safe;
-            ImportAudioPreviewEditMenu.Enabled = safe;
-            ExplorerEditMenu.Enabled           = true;
-            EditMenu.Enabled                   = true;
-            MetadataGroupBox.Enabled           = true;
-            InfEditButton.Text                 = InfVerDropDown.SelectedItem.ToString();
-            
-            LoadJacket(header);
-        }
-
-        private void OnRemoveButtonClick(object sender, EventArgs e)
+        #region --- Song details ---
+        private void ShowSelection()
         {
             var header = MusicListBox.SelectedItem as VoxHeader;
-            if (header == null)
+            bool show  = header != null;
+
+            MetadataCard.Visible      = show;
+            ChartsCard.Visible        = show;
+            EmptyContentLabel.Visible = !show;
+            if (!show)
+            {
+                _songJacket = null;
+                return;
+            }
+
+            _songJacket = JacketCache.Get(JacketCache.SongJacketFile(header), 88);
+            var firstLevel = header.Levels.Keys.OrderBy(d => d).Select(d => header.Levels[d]).FirstOrDefault(l => l.Jacket != null);
+            if (firstLevel != null && !_pristine)
+                _songJacket = JacketCache.Scale(firstLevel.Jacket, 88);
+
+            TitleLabel.Text  = VoxHeader.WithDecodedSymbols(header.Title);
+            ArtistLabel.Text = VoxHeader.WithDecodedSymbols(header.Artist);
+
+            BpmTile.Value        = FormatBpm(header);
+            VolumeTile.Value     = $"{header.Volume} %";
+            BackgroundTile.Value = $"{header.BackgroundId:D2}";
+            DateTile.Value       = header.DistributionDate.ToString("yyyy-MM-dd");
+
+            FilesLabel.Text = $"Version  {VersionName(header.Version)}      Music  {AudioFile(header, false)}      Preview  {AudioFile(header, true)}";
+
+            EditMetadataButton.Enabled = CanEdit;
+            ExplorerButton.Enabled     = Directory.Exists(AssetManager.GetMusicPath(header));
+
+            int filled = header.Levels.Count;
+            ChartsSubLabel.Text = $"{filled} of 4 difficulties filled" + (CanEdit ? string.Empty : ", read-only in this view");
+            foreach (var tile in Tiles)
+                tile.Bind(header, ChartJacket(header, tile.Difficulty), CanEdit);
+
+            RefreshReconvertControls();
+            JacketBox.Invalidate();
+            ChipsLabel.Invalidate();
+        }
+
+        // Jacket of one chart: a picked but unsaved image first, then the file in the music folder
+        private Image ChartJacket(VoxHeader header, Difficulty difficulty)
+        {
+            if (!header.Levels.TryGetValue(difficulty, out var level))
+                return null;
+
+            if (level.Jacket != null)
+                return JacketCache.Scale(level.Jacket, 60);
+
+            return JacketCache.Get(JacketCache.JacketFile(header, difficulty), 60);
+        }
+
+        private static string FormatBpm(VoxHeader header)
+        {
+            string min = header.BpmMin.ToString("0.##");
+            string max = header.BpmMax.ToString("0.##");
+            return min == max ? min : $"{min} - {max}";
+        }
+
+        private static string VersionName(GameVersion version)
+        {
+            switch (version)
+            {
+                case GameVersion.Booth:             return "Booth";
+                case GameVersion.InfiniteInfection: return "Infinite Infection";
+                case GameVersion.GravityWars:       return "Gravity Wars";
+                case GameVersion.HeavenlyHaven:     return "Heavenly Haven";
+                case GameVersion.VividWave:         return "Vivid Wave";
+                case GameVersion.ExceedGear:        return "Exceed Gear";
+                default:                            return "Nabla";
+            }
+        }
+
+        private static string AudioFile(VoxHeader header, bool preview)
+        {
+            try
+            {
+                foreach (var format in new[] { AudioFormat.S3V, AudioFormat.Iidx })
+                {
+                    string path = AssetManager.GetAudioPath(header, format, preview);
+                    if (File.Exists(path))
+                        return Path.GetFileName(path);
+                }
+
+                // Per-difficulty audio
+                foreach (var diff in header.Levels.Keys)
+                {
+                    foreach (var format in new[] { AudioFormat.S3V, AudioFormat.Iidx })
+                    {
+                        string path = AssetManager.GetAudioPath(header, diff, format, preview);
+                        if (File.Exists(path))
+                            return Path.GetFileName(path) + " (per chart)";
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            return "missing";
+        }
+
+        private void OnEditMetadataButtonClick(object sender, EventArgs e)
+        {
+            if (!CanEdit || !(MusicListBox.SelectedItem is VoxHeader header))
                 return;
 
+            using (var editor = new MetadataEditorForm(header, true))
+            {
+                if (editor.ShowDialog(this) != DialogResult.OK)
+                    return;
+
+                if (editor.MusicId != header.Id)
+                {
+                    // Folder, files, thumbnails, URL sidecar and manifest follow the new id on save
+                    int oldId    = header.Id;
+                    int newId    = editor.MusicId;
+                    string ascii = header.Ascii;
+                    AssetManager.Headers.ChangeId(header, newId);
+                    QueueAction("Renumber", () => AssetManager.RenameMusicAssets(oldId, newId, ascii));
+                }
+
+                foreach (var (file, preview) in new[] { (editor.MusicFile, false), (editor.PreviewFile, true) })
+                {
+                    if (string.IsNullOrEmpty(file) || !File.Exists(file))
+                        continue;
+
+                    string tmp = Path.Combine(Path.GetTempPath(), $"{Path.GetRandomFileName()}{Path.GetExtension(file)}");
+                    File.Copy(file, tmp);
+
+                    var importOptions = new AudioImportOptions
+                    {
+                        Format    = file.ToLower().EndsWith(".s3v") ? AudioFormat.S3V : AudioFormat.Iidx,
+                        IsPreview = preview,
+                    };
+                    QueueAction(header.Ascii, () => AssetManager.ImportAudio(tmp, header, importOptions));
+                }
+            }
+
+            ApplyCurrentSort();
+            MarkDirty();
+            ShowSelection();
+        }
+
+        private void OnChartEditClick(object sender, EventArgs e)
+        {
+            if (!CanEdit || !(MusicListBox.SelectedItem is VoxHeader header))
+                return;
+
+            var difficulty = ((ChartTile)sender).Difficulty;
+            using (var editor = new LevelEditorForm(header, difficulty))
+            {
+                if (editor.ShowDialog(this) != DialogResult.OK)
+                    return;
+
+                // Update the levels in case it's newly added
+                editor.Result.Difficulty  = difficulty;
+                header.Levels[difficulty] = editor.Result;
+                if (editor.Action != null)
+                    QueueAction(header.Ascii, editor.Action);
+            }
+
+            MarkDirty();
+            MusicListBox.Invalidate();
+            ShowSelection();
+        }
+
+        private void OnChartRemoveClick(object sender, EventArgs e)
+        {
+            if (!CanEdit || !(MusicListBox.SelectedItem is VoxHeader header))
+                return;
+
+            var difficulty = ((ChartTile)sender).Difficulty;
+            if (!header.Levels.ContainsKey(difficulty))
+                return;
+
+            if (header.Levels.Count == 1)
+            {
+                MessageBox.Show("A song needs at least one chart. Remove the song instead.", "Remove chart", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string name = Theme.DifficultyName(difficulty, header.InfVersion);
             var response = MessageBox.Show(
-                $"Are you sure want to delete selected song?",
-                "Delete",
+                $"Remove the {name} chart of \"{VoxHeader.WithDecodedSymbols(header.Title)}\"? Its files are deleted when you save.",
+                "Remove chart",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning
             );
 
-            if (response == DialogResult.No)
+            if (response != DialogResult.Yes)
                 return;
 
-            AssetManager.Headers.Remove(header);
-            MusicListBox.Items.Remove(header);
-            // Drop the sidecar URL too so a stale id doesn't survive into a
-            // future export; orphaned URLs would just confuse the importer.
-            MixUrlStore.RemoveUrl(AssetManager.MixPath, header.Id);
+            // Paths now, a later INF version change would point them elsewhere
+            string vox       = AssetManager.GetVoxPath(header, difficulty);
+            string jacket    = AssetManager.GetJacketPath(header, difficulty);
+            string thumbnail = AssetManager.GetThumbnailJacketPath(header, difficulty);
+            QueueAction(header.Ascii, () => AssetManager.DeleteLevelAssets(header, difficulty, vox, jacket, thumbnail));
+            header.Levels.Remove(difficulty);
 
-            // Clear pending modification, since this asset will be deleted anyway
-            _actions[header.Ascii] = new Queue<Action>();
-            _actions[header.Ascii].Enqueue(() => AssetManager.DeleteAssets(header));
-
-            if (_autosave)
-                Save(AssetManager.MdbFilename);
+            MarkDirty();
+            MusicListBox.Invalidate();
+            ShowSelection();
         }
 
-        private void OnPathTextBoxTextChanged(object sender, EventArgs e)
+        private void OnJacketPictureBoxClick(object sender, EventArgs e)
         {
-            MusicGroupBox.Enabled = !string.IsNullOrEmpty(PathTextBox.Text);
+            if (!(MusicListBox.SelectedItem is VoxHeader header) || header.Levels.Count == 0)
+                return;
+
+            var difficulty = header.Levels.Keys.Min();
+            string jacket = $"{AssetManager.GetJacketPath(header, difficulty)}_b.png";
+            if (!File.Exists(jacket))
+                return;
+
+            using (var image  = Image.FromFile(jacket))
+            using (var viewer = new JacketViewerForm(image))
+                viewer.ShowDialog(this);
         }
         #endregion
 
         #region --- Functions ---
-
-        private void LoadMusicDb()
-        {
-            using (var loader = new LoadingForm())
-            {
-                loader.SetAction(dialog =>
-                {
-                    MusicListBox.Items.Clear();
-                    foreach (var header in AssetManager.Headers)
-                    {
-                        MusicListBox.Items.Add(header);
-
-                        dialog.SetStatus(header.Title);
-                        dialog.SetProgress(((float)MusicListBox.Items.Count / AssetManager.Headers.Count) * 100f);
-                    }
-
-                    dialog.Complete();
-                });
-
-
-                loader.ShowDialog();
-            }
-
-            // Apply the active sort once after the bulk add — much cheaper
-            // than re-sorting per-item, and AssetManager.Headers comes back
-            // in DB order, not user-visible order.
-            ApplyCurrentSort();
-        }
-
         private bool Save(string dbFilename)
         {
             var errors = new List<string>();
@@ -2075,202 +1895,23 @@ namespace VoxCharger
             _actions.Clear();
             _pristine = true;
 
+            // Jackets written by the save replace the cached ones
+            foreach (var header in AssetManager.Headers)
+            {
+                foreach (var level in header.Levels.Values)
+                {
+                    level.Jacket?.Dispose();
+                    level.Jacket = null;
+                }
+            }
+
+            JacketCache.Clear();
+            MusicListBox.Invalidate();
+            UpdateUi();
+            ShowSelection();
+
             return errors.Count == 0;
         }
-
-        private void ImportAudioFile(bool preview = false)
-        {
-            var header = MusicListBox.SelectedItem as VoxHeader;
-            if (header == null)
-                return;
-
-            using (var browser = new OpenFileDialog())
-            {
-                browser.Filter = "All supported formats|*.2dx;*.s3v;*.asf;*.wav;*.ogg;*.mp3;*.flac|BEMANI Music Files|*.2dx;*.s3v|Music Files|*.wav;*.ogg;*.mp3;*.flac;*.asf";
-                browser.CheckFileExists = true;
-
-                if (browser.ShowDialog() != DialogResult.OK)
-                    return;
-
-                string source = browser.FileName;
-                string tmp = Path.Combine(
-                    Path.GetTempPath(),
-                    $"{Path.GetRandomFileName()}{new FileInfo(source).Extension}"
-                );
-
-                File.Copy(source, tmp);
-                if (!_actions.ContainsKey(header.Ascii))
-                    _actions[header.Ascii] = new Queue<Action>();
-
-                var importOptions = new AudioImportOptions
-                {
-                    Format    = browser.FileName.ToLower().EndsWith(".s3v") ? AudioFormat.S3V : AudioFormat.Iidx,
-                    IsPreview = preview,
-                };
-                _actions[header.Ascii].Enqueue(() => AssetManager.ImportAudio(tmp, header, importOptions));
-
-                if (_autosave)
-                    Save(AssetManager.MdbFilename);
-            }
-        }
-
-        private void LoadJacket(VoxHeader header)
-        {
-            string defaultJacket = $"{AssetManager.GetDefaultJacketPath(header)}_s.png";
-            foreach (Difficulty diff in Enum.GetValues(typeof(Difficulty)))
-            {
-                PictureBox picture;
-                switch (diff)
-                {
-                    case Difficulty.Novice:   picture = JacketNovPictureBox; break;
-                    case Difficulty.Advanced: picture = JacketAdvPictureBox; break;
-                    case Difficulty.Exhaust:  picture = JacketExhPictureBox; break;
-                    default:                  picture = JacketInfPictureBox; break;
-                }
-
-                if (!header.Levels.ContainsKey(diff))
-                {
-                    picture.Image = _dummyJacket;
-                    continue;
-                }
-
-                try
-                {
-                    string filename = $"{AssetManager.GetJacketPath(header, diff)}_s.png";
-                    if (File.Exists(filename) && (_pristine || header.Levels[diff].Jacket == null))
-                    {
-                        using (var image = Image.FromFile(filename))
-                            picture.Image = new Bitmap(image);
-
-                        if (header.Levels[diff].Jacket != null) // clear cache
-                        {
-                            header.Levels[diff].Jacket.Dispose();
-                            header.Levels[diff].Jacket = null; 
-                        }
-                    }
-                    else if (header.Levels[diff].Jacket != null)
-                    {
-                        // use cache for new + unsaved header
-                        picture.Image = header.Levels[diff].Jacket;
-                    }
-                    else if (File.Exists(defaultJacket))
-                    {
-                        using (var image = Image.FromFile(defaultJacket))
-                            picture.Image = new Bitmap(image);                    
-                    }
-                    else
-                        picture.Image = _dummyJacket;
-                }
-                catch (Exception)
-                {
-                    picture.Image = _dummyJacket;
-                }
-            }
-        }
-
-        private void Reload()
-        {
-            PathTextBox.Text = AssetManager.MixPath;
-            MetadataGroupBox.Enabled = false;
-
-            ResetEditor();
-            DisableUi();
-
-            LoadMusicDb();
-            EnableUi();
-        }
-
-        private void EnableUi()
-        {
-            UpdateUi(true);
-        }
-
-        private void DisableUi()
-        {
-            UpdateUi(false);
-            ResetEditor();
-        }
-
-        private void UpdateUi(bool state)
-        {
-            // Dont break your goddamn kfc
-            bool safe = !string.IsNullOrEmpty(AssetManager.MixName);
-
-            // Container
-            MusicGroupBox.Enabled     = state;
-
-            // Menu
-            SaveFileMenu.Enabled      = state && safe; 
-            SaveAsFileMenu.Enabled    = state;
-            ChangeMixFileMenu.Enabled = state;
-            DeleteMixFileMenu.Enabled = state && safe;
-            ExportMixFileMenu.Enabled = state && safe;
-            ImportMixFileMenu.Enabled = state && safe;
-            MixTagFileMenu.Enabled    = state && safe;
-            MixStartIdFileMenu.Enabled = state && safe;
-            AddButton.Enabled         = state && safe;
-            AddEditMenu.Enabled       = state && safe;
-            RemoveButton.Enabled      = state && safe;
-            RemoveEditMenu.Enabled    = state && safe;
-            EditMenu.Enabled          = state && safe;
-            ImportAudioEditMenu.Enabled = state && safe;
-            ImportAudioPreviewEditMenu.Enabled = state && safe;
-
-            foreach (Control control in MetadataGroupBox.Controls)
-            {
-                if (control is TextBox textBox)
-                    textBox.ReadOnly = !safe;
-                else if (control is NumericUpDown numeric)
-                    numeric.Enabled = safe;
-                else if (!(control is PictureBox))
-                    control.Enabled = safe;
-            }
-
-            IdTextBox.ReadOnly    = !safe;
-            LevelGroupBox.Enabled = true;
-            foreach (Control control in LevelGroupBox.Controls)
-            {
-                if (!(control is PictureBox))
-                    control.Enabled = safe;
-                else
-                    control.Enabled = true;
-            }
-        }
-
-        private void ResetEditor()
-        {
-            foreach (Control control in MetadataGroupBox.Controls)
-            {
-                if (control is TextBox)
-                    control.Text                       = "";
-                else if (control is NumericUpDown)
-                    (control as NumericUpDown).Value   = 1;
-                else if (control is ComboBox)
-                    (control as ComboBox).SelectedItem = null;
-            }
-
-            foreach (Control control in LevelGroupBox.Controls)
-            {
-                if (control is PictureBox)
-                {
-                    var pictureBox = control as PictureBox;
-                    pictureBox.Image = _dummyJacket;
-                }
-                else if (control is Button && control.Tag.ToString() == "4")
-                {
-                    control.Text = "--";
-                }
-            }
-
-            DistributionPicker.Value = DateTime.Now;
-            VolumeTrackBar.Value     = DefaultVolume;
-
-            EditMenu.Enabled                 = false;
-            ImportAudioEditMenu.Enabled        = false;
-            ImportAudioPreviewEditMenu.Enabled = false;
-            ExplorerEditMenu.Enabled         = false;
-        }
         #endregion
-
     }
 }

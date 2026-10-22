@@ -217,6 +217,12 @@
     <Compile Include="Sources\Remote\RemoteModels.cs" />
     <Compile Include="Sources\Remote\RemoteMixClient.cs" />
     <Compile Include="Sources\Remote\KsmDownloader.cs" />
+    <Compile Include="Sources\Forms\Theme.cs" />
+    <Compile Include="Sources\Forms\SongViews.cs" />
+    <Compile Include="Sources\Forms\UiSettings.cs" />
+    <Compile Include="Sources\Forms\MetadataEditorForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Sources\Forms\InputForm.cs">
       <SubType>Form</SubType>
     </Compile>

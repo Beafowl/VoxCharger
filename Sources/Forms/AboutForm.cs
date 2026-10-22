@@ -8,6 +8,7 @@ namespace VoxCharger
         public AboutForm()
         {
             InitializeComponent();
+            Theme.Attach(this);
 
             // Form titlebar / taskbar icon follows Windows theme so it stays
             // legible against the OS chrome. The big in-content profile

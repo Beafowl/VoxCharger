@@ -12,6 +12,7 @@ namespace VoxCharger
         public LoadingForm()
         {
             InitializeComponent();
+            Theme.Attach(this);
         }
 
         private void OnLoadingForm(object sender, EventArgs e)
