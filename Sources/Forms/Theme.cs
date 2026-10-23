@@ -41,6 +41,7 @@ namespace VoxCharger
         public static readonly Font SmallBold = new Font("Segoe UI", 8.25f, FontStyle.Bold);
         public static readonly Font Caption   = new Font("Segoe UI", 7.5f, FontStyle.Bold);
         public static readonly Font Tiny      = new Font("Segoe UI", 7f, FontStyle.Bold);
+        public static readonly Font Badge     = new Font("Segoe UI Semibold", 8.25f);
         public static readonly Font Mono      = new Font("Consolas", 8.25f);
         public static readonly Font MonoLarge = new Font("Consolas", 11.25f);
         public static readonly Font Title     = new Font("Segoe UI", 17f, FontStyle.Bold);
@@ -499,6 +500,7 @@ namespace VoxCharger
         public string SubText       { get; set; } // right-aligned muted text
         public bool Chevron         { get; set; }
         public bool ChevronUp       { get; set; }
+        public bool ChevronAtEdge   { get; set; } // chevron at the right edge, content stays centered
         public bool AlignLeft       { get; set; }
         public bool Highlighted     { get; set; } // accent border, e.g. while its menu is open
         public int Radius           { get; set; } = 8;
@@ -581,7 +583,7 @@ namespace VoxCharger
             if (AlignLeft)
                 x = pad;
             else
-                x = (Width - (glyphW + textSize.Width + subW + chevW)) / 2;
+                x = (Width - (glyphW + textSize.Width + subW + (ChevronAtEdge ? 0 : chevW))) / 2;
 
             int cy = Height / 2;
             if (Glyph != ButtonGlyph.None)
@@ -602,7 +604,7 @@ namespace VoxCharger
 
             if (Chevron)
             {
-                float chx = AlignLeft ? Width - pad - 5 : x + textSize.Width + subW + 10;
+                float chx = AlignLeft || ChevronAtEdge ? Width - pad - 5 : x + textSize.Width + subW + 10;
                 Theme.Chevron(g, Theme.TextDim, new PointF(chx, cy), ChevronUp);
             }
 

@@ -147,13 +147,12 @@ namespace VoxCharger
                 return;
 
             // Header: search after the app name, actions on the right
-            AppSubLabel.Location = new Point(AppLabel.Right + 6, AppLabel.Top + 2);
             int right = HeaderPanel.Width - 16;
             AboutButton.Location = new Point(right - AboutButton.Width, 10);
             ToolsButton.Location = new Point(AboutButton.Left - 4 - ToolsButton.Width, 10);
             SaveButton.Location  = new Point(ToolsButton.Left - 10 - SaveButton.Width, 10);
-            int searchLeft = Math.Max(AppSubLabel.Right + 40, SidePanel.Width + 0);
-            SearchBox.SetBounds(searchLeft, 10, Math.Max(160, Math.Min(420, SaveButton.Left - 24 - searchLeft)), 32);
+            // Search sits above the song column it filters
+            SearchBox.SetBounds(16, 10, Math.Max(160, Math.Min(SidePanel.Width - 32, SaveButton.Left - 24 - 16)), 32);
 
             // Left column
             int w = SidePanel.Width;
@@ -200,11 +199,6 @@ namespace VoxCharger
         {
             var g = e.Graphics;
             Theme.Smooth(g);
-            var logo = new Rectangle(16, 13, 26, 26);
-            Theme.FillRounded(g, Theme.Accent, logo, 7);
-            using (var pen = new Pen(Theme.OnAccent, 2.2f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round, LineJoin = System.Drawing.Drawing2D.LineJoin.Round })
-                g.DrawLines(pen, new[] { new PointF(logo.X + 7, logo.Y + 8), new PointF(logo.X + 13, logo.Y + 19), new PointF(logo.X + 19, logo.Y + 8) });
-
             using (var pen = new Pen(Theme.Border))
                 g.DrawLine(pen, 0, HeaderPanel.Height - 1, HeaderPanel.Width, HeaderPanel.Height - 1);
         }

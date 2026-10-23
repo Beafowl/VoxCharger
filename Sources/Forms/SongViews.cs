@@ -222,7 +222,7 @@ namespace VoxCharger
             var badgeSizes = new List<int>();
             foreach (var level in levels)
             {
-                int w = Math.Max(18, TextRenderer.MeasureText(g, level.Value.Level.ToString(), Theme.Tiny, Size.Empty, TextFormatFlags.NoPadding).Width + 8);
+                int w = Math.Max(22, TextRenderer.MeasureText(g, level.Value.Level.ToString(), Theme.Badge, Size.Empty, TextFormatFlags.NoPadding).Width + 10);
                 badgeSizes.Add(w);
                 badgesWidth += w + 3;
             }
@@ -235,9 +235,9 @@ namespace VoxCharger
             int bx = right - badgesWidth;
             for (int i = 0; i < levels.Count; i++)
             {
-                var badge = new Rectangle(bx, 30, badgeSizes[i], 16);
+                var badge = new Rectangle(bx, 28, badgeSizes[i], 19);
                 Theme.FillRounded(g, Theme.DifficultyColor(levels[i].Key, header.InfVersion), badge, 4);
-                Theme.DrawText(g, levels[i].Value.Level.ToString(), Theme.Tiny, Theme.OnAccent, badge, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                Theme.DrawText(g, levels[i].Value.Level.ToString(), Theme.Badge, Theme.OnAccent, badge, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 bx += badgeSizes[i] + 3;
             }
 

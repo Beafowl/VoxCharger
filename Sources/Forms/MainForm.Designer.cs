@@ -32,8 +32,6 @@
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(MainForm));
 
             this.HeaderPanel        = new System.Windows.Forms.Panel();
-            this.AppLabel           = new System.Windows.Forms.Label();
-            this.AppSubLabel        = new System.Windows.Forms.Label();
             this.SearchBox          = new VoxCharger.SearchBox();
             this.SaveButton         = new VoxCharger.FlatButton();
             this.ToolsButton        = new VoxCharger.FlatButton();
@@ -88,8 +86,6 @@
             // HeaderPanel
             //
             this.HeaderPanel.BackColor = VoxCharger.Theme.Header;
-            this.HeaderPanel.Controls.Add(this.AppLabel);
-            this.HeaderPanel.Controls.Add(this.AppSubLabel);
             this.HeaderPanel.Controls.Add(this.SearchBox);
             this.HeaderPanel.Controls.Add(this.SaveButton);
             this.HeaderPanel.Controls.Add(this.ToolsButton);
@@ -98,24 +94,6 @@
             this.HeaderPanel.Height = 52;
             this.HeaderPanel.Name = "HeaderPanel";
             this.HeaderPanel.Paint += new System.Windows.Forms.PaintEventHandler(this.OnHeaderPanelPaint);
-            //
-            // AppLabel
-            //
-            this.AppLabel.AutoSize = true;
-            this.AppLabel.Font = VoxCharger.Theme.BodyBold;
-            this.AppLabel.ForeColor = VoxCharger.Theme.Text;
-            this.AppLabel.Location = new System.Drawing.Point(52, 16);
-            this.AppLabel.Name = "AppLabel";
-            this.AppLabel.Text = "VoxCharger";
-            //
-            // AppSubLabel
-            //
-            this.AppSubLabel.AutoSize = true;
-            this.AppSubLabel.Font = VoxCharger.Theme.Small;
-            this.AppSubLabel.ForeColor = VoxCharger.Theme.TextDim;
-            this.AppSubLabel.Location = new System.Drawing.Point(140, 18);
-            this.AppSubLabel.Name = "AppSubLabel";
-            this.AppSubLabel.Text = "Mix manager";
             //
             // SearchBox
             //
@@ -244,6 +222,7 @@
             //
             this.SongsButton.Chevron = true;
             this.SongsButton.ChevronUp = true;
+            this.SongsButton.ChevronAtEdge = true;
             this.SongsButton.Glyph = VoxCharger.ButtonGlyph.Plus;
             this.SongsButton.Name = "SongsButton";
             this.SongsButton.Text = "Songs";
@@ -253,6 +232,7 @@
             //
             this.MixMenuButton.Chevron = true;
             this.MixMenuButton.ChevronUp = true;
+            this.MixMenuButton.ChevronAtEdge = true;
             this.MixMenuButton.Name = "MixMenuButton";
             this.MixMenuButton.Text = "Mix";
             this.MixMenuButton.Click += new System.EventHandler(this.OnMixMenuButtonClick);
@@ -453,8 +433,6 @@
         #endregion
 
         private System.Windows.Forms.Panel HeaderPanel;
-        private System.Windows.Forms.Label AppLabel;
-        private System.Windows.Forms.Label AppSubLabel;
         private VoxCharger.SearchBox SearchBox;
         private VoxCharger.FlatButton SaveButton;
         private VoxCharger.FlatButton ToolsButton;
