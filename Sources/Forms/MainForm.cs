@@ -191,13 +191,13 @@ namespace VoxCharger
             MusicTile.SetBounds(20, rowY + 62 + gap, fileW, 62);
             PreviewTile.SetBounds(20 + fileW + gap, rowY + 62 + gap, cw - 40 - fileW - gap, 62);
 
-            ChartsCard.SetBounds(24, MetadataCard.Bottom + 16, cw, 72 + 88 + 12 + 88 + 20);
-            ReconvertButton.Location = new Point(cw - 20 - ReconvertButton.Width, 18);
+            ChartsCard.SetBounds(24, MetadataCard.Bottom + 16, cw, 60 + 88 + 12 + 88 + 20);
+            ReconvertButton.Location = new Point(cw - 20 - ReconvertButton.Width, 14);
             int chartW = (cw - 40 - 12) / 2;
-            NovTile.SetBounds(20, 72, chartW, 88);
-            AdvTile.SetBounds(20 + chartW + 12, 72, chartW, 88);
-            ExhTile.SetBounds(20, 72 + 88 + 12, chartW, 88);
-            InfTile.SetBounds(20 + chartW + 12, 72 + 88 + 12, chartW, 88);
+            NovTile.SetBounds(20, 60, chartW, 88);
+            AdvTile.SetBounds(20 + chartW + 12, 60, chartW, 88);
+            ExhTile.SetBounds(20, 60 + 88 + 12, chartW, 88);
+            InfTile.SetBounds(20 + chartW + 12, 60 + 88 + 12, chartW, 88);
         }
 
         private void OnHeaderPanelPaint(object sender, PaintEventArgs e)
@@ -1614,8 +1614,6 @@ namespace VoxCharger
             EditMetadataButton.Enabled = CanEdit;
             ExplorerButton.Enabled     = Directory.Exists(AssetManager.GetMusicPath(header));
 
-            int filled = header.Levels.Count;
-            ChartsSubLabel.Text = $"{filled} of 4 difficulties filled" + (CanEdit ? string.Empty : ", read-only in this view");
             foreach (var tile in Tiles)
                 tile.Bind(header, ChartJacket(header, tile.Difficulty), CanEdit);
 

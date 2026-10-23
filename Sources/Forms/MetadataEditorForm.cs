@@ -135,8 +135,24 @@ namespace VoxCharger
         [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
         private static extern int SetWindowTheme(IntPtr hwnd, string appName, string idList);
 
-        // Month calendar below the release date field; picking a day fills the field
+        private ToolStripDropDown _calendarPopup;
+        private MonthCalendar _calendar;
+
+        // Month calendar below the release date field; picking a day fills the field.
+        // The popup is created once and disposed with the dialog: disposing it from its own Closed
+        // event broke the menu message filter, which still handles the click that closed it.
         private void ShowCalendar(Control anchor)
+        {
+            if (_calendarPopup == null)
+                CreateCalendar();
+
+            if (DateTime.TryParseExact(_date.Text.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var current))
+                _calendar.SetDate(current);
+
+            _calendarPopup.Show(anchor, new Point(anchor.Width - _calendar.Width - 2, anchor.Height + 4));
+        }
+
+        private void CreateCalendar()
         {
             var calendar = new MonthCalendar
             {
@@ -153,9 +169,6 @@ namespace VoxCharger
             calendar.TitleForeColor    = Theme.OnAccent;
             calendar.TrailingForeColor = Theme.TextOff;
 
-            if (DateTime.TryParseExact(_date.Text.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var current))
-                calendar.SetDate(current);
-
             var host  = new ToolStripControlHost(calendar) { Margin = Padding.Empty, Padding = Padding.Empty, AutoSize = false, Size = calendar.Size };
             var popup = new ToolStripDropDown { Padding = new Padding(1), BackColor = Theme.BorderLight, Renderer = new DarkMenuRenderer() };
             popup.Items.Add(host);
@@ -163,13 +176,17 @@ namespace VoxCharger
             calendar.DateSelected += (s, e) =>
             {
                 _date.Text = e.Start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                popup.Close();
-                _date.Focus();
+                BeginInvoke(new Action(() =>
+                {
+                    popup.Close();
+                    _date.Focus();
+                }));
             };
-            popup.Closed += (s, e) => popup.Dispose();
 
-            host.Size = calendar.Size;
-            popup.Show(anchor, new Point(anchor.Width - calendar.Width - 2, anchor.Height + 4));
+            host.Size      = calendar.Size;
+            _calendar      = calendar;
+            _calendarPopup = popup;
+            FormClosed += (s, e) => popup.Dispose();
         }
 
         private static decimal Clamp(decimal value, NumericUpDown box)

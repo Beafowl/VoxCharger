@@ -68,7 +68,6 @@
             this.PreviewTile        = new VoxCharger.StatTile();
             this.ChartsCard         = new VoxCharger.CardPanel();
             this.ChartsTitleLabel   = new System.Windows.Forms.Label();
-            this.ChartsSubLabel     = new System.Windows.Forms.Label();
             this.ReconvertButton    = new VoxCharger.FlatButton();
             this.NovTile            = new VoxCharger.ChartTile(VoxCharger.Difficulty.Novice);
             this.AdvTile            = new VoxCharger.ChartTile(VoxCharger.Difficulty.Advanced);
@@ -352,7 +351,6 @@
             // ChartsCard
             //
             this.ChartsCard.Controls.Add(this.ChartsTitleLabel);
-            this.ChartsCard.Controls.Add(this.ChartsSubLabel);
             this.ChartsCard.Controls.Add(this.ReconvertButton);
             this.ChartsCard.Controls.Add(this.NovTile);
             this.ChartsCard.Controls.Add(this.AdvTile);
@@ -367,18 +365,9 @@
             this.ChartsTitleLabel.BackColor = VoxCharger.Theme.Card;
             this.ChartsTitleLabel.Font = VoxCharger.Theme.CardTitle;
             this.ChartsTitleLabel.ForeColor = VoxCharger.Theme.Text;
-            this.ChartsTitleLabel.Location = new System.Drawing.Point(20, 18);
+            this.ChartsTitleLabel.Location = new System.Drawing.Point(20, 22);
             this.ChartsTitleLabel.Name = "ChartsTitleLabel";
             this.ChartsTitleLabel.Text = "Charts";
-            //
-            // ChartsSubLabel
-            //
-            this.ChartsSubLabel.AutoSize = true;
-            this.ChartsSubLabel.BackColor = VoxCharger.Theme.Card;
-            this.ChartsSubLabel.Font = VoxCharger.Theme.Small;
-            this.ChartsSubLabel.ForeColor = VoxCharger.Theme.TextDim;
-            this.ChartsSubLabel.Location = new System.Drawing.Point(21, 42);
-            this.ChartsSubLabel.Name = "ChartsSubLabel";
             //
             // ReconvertButton
             //
@@ -467,7 +456,6 @@
         private VoxCharger.StatTile PreviewTile;
         private VoxCharger.CardPanel ChartsCard;
         private System.Windows.Forms.Label ChartsTitleLabel;
-        private System.Windows.Forms.Label ChartsSubLabel;
         private VoxCharger.FlatButton ReconvertButton;
         private VoxCharger.ChartTile NovTile;
         private VoxCharger.ChartTile AdvTile;
