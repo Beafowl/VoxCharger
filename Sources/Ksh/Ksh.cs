@@ -125,8 +125,10 @@ namespace VoxCharger
                 TitleYomigana    = "ダミー",
                 Artist           = Artist,
                 ArtistYomigana   = "ダミー",
-                BpmMin           = BpmMin,
-                BpmMax           = BpmMax,
+                // Gimmick charts slow down to t=0.001; the display range starts at 1 BPM, music_db
+                // stores whole hundredths
+                BpmMin           = Math.Max(1f, BpmMin),
+                BpmMax           = Math.Max(1f, BpmMax),
                 Volume           = Volume > 0 ? (short)Volume : (short)80,
                 DistributionDate = DateTime.Now,
                 BackgroundId     = DefaultBackgroundId,
@@ -154,6 +156,167 @@ namespace VoxCharger
             return line.Length >= 10 && char.IsDigit(line[0]) && line[4] == '|' && line[7] == '|';
         }
 
+        // "4/4" of a beat= line
+        private static bool TryParseBeat(string value, out (int beat, int note) signature)
+        {
+            signature = (4, 4);
+            var sig = value.Split('/');
+            if (sig.Length != 2 || !int.TryParse(sig[0].Trim(), out int b) || !int.TryParse(sig[1].Trim(), out int n) || b <= 0 || n <= 0)
+                return false;
+
+            signature = (b, n);
+            return true;
+        }
+
+        // VOX positions are whole ticks, 192 per whole note, so a measure needs a signature whose note
+        // divides 192. Gimmick charts move barlines with signatures like 1/768, 767/768 or a run of
+        // 1920 measures of 1/1920. Those charts get their measures laid out on the tick grid: measure
+        // starts that fall between ticks are rounded to 1/32 notes (the game's own charts use x/32),
+        // KSH measures that end up empty share the VOX measure they fall in, and every line keeps its
+        // exact time (to the nearest tick). Every other chart maps measure for measure.
+        private class MeasureMap
+        {
+            private const int Unit = Time.TicksPerWholeNote / 32;
+
+            private double[] _start;                                    // exact start tick of KSH measure k
+            private double[] _length;
+            private int[]    _voxMeasure;                               // VOX measure of KSH measure k
+            private readonly List<int> _voxStart = new List<int> { 0 }; // start tick of VOX measure v (1-based)
+            private readonly List<(int beat, int note)> _voxSignature = new List<(int beat, int note)> { (4, 4) };
+
+            public int VoxMeasureCount => _voxStart.Count - 1;
+
+            // Null when every signature fits the tick grid
+            public static MeasureMap Build(string[] lines, int measureCount)
+            {
+                int count    = measureCount + 2;
+                var declared = new (int beat, int note)?[count + 1];
+
+                // Same placement as the parser: in the header for the first measure, before the first note
+                // line for its own measure, after it for the next one. The last one wins.
+                int measure  = 0;
+                bool notes   = false;
+                foreach (string raw in lines)
+                {
+                    string line = raw.Trim();
+                    if (line == "--")
+                    {
+                        measure++;
+                        notes = false;
+                    }
+                    else if (IsNoteLine(line))
+                        notes = true;
+                    else if (line.IndexOf('=') is int eq && eq > 0 && line.Substring(0, eq).Trim().Equals("beat", StringComparison.OrdinalIgnoreCase)
+                             && TryParseBeat(line.Substring(eq + 1).Trim(), out var signature))
+                    {
+                        int target = measure == 0 ? 1 : (notes ? measure + 1 : measure);
+                        if (target <= count)
+                            declared[target] = signature;
+                    }
+                }
+
+                var signatures = new (int beat, int note)[count + 1];
+                var current    = (beat: 4, note: 4);
+                bool fits      = true;
+                for (int k = 1; k <= count; k++)
+                {
+                    current       = declared[k] ?? current;
+                    signatures[k] = current;
+                    fits         &= Time.TicksPerWholeNote % current.note == 0;
+                }
+
+                if (fits)
+                    return null;
+
+                var map = new MeasureMap
+                {
+                    _start      = new double[count + 2],
+                    _length     = new double[count + 1],
+                    _voxMeasure = new int[count + 1],
+                };
+
+                var rounded = new int[count + 2];
+                for (int k = 1; k <= count; k++)
+                {
+                    map._length[k]    = signatures[k].beat * (double)Time.TicksPerWholeNote / signatures[k].note;
+                    map._start[k + 1] = map._start[k] + map._length[k];
+                }
+
+                for (int k = 1; k <= count + 1; k++)
+                {
+                    double exact = map._start[k];
+                    int tick     = Math.Abs(exact - Math.Round(exact)) < 1e-6 ? (int)Math.Round(exact) : (int)Math.Round(exact / Unit) * Unit;
+                    rounded[k]   = Math.Max(tick, k > 1 ? rounded[k - 1] : 0);
+                }
+
+                var firstOf = new List<int> { 0 };                      // first KSH measure of VOX measure v
+                for (int k = 1; k <= count; k++)
+                {
+                    if (k == 1 || rounded[k] > rounded[k - 1])
+                    {
+                        map._voxStart.Add(rounded[k]);
+                        firstOf.Add(k);
+                    }
+
+                    map._voxMeasure[k] = map._voxStart.Count - 1;
+                }
+
+                for (int v = 1; v < map._voxStart.Count; v++)
+                {
+                    int k      = firstOf[v];
+                    int end    = v + 1 < map._voxStart.Count ? map._voxStart[v + 1] : rounded[count + 1];
+                    int length = end - map._voxStart[v];
+
+                    bool alone = map._voxMeasure[k] != (k < count ? map._voxMeasure[k + 1] : -1);
+                    bool exact = Time.TicksPerWholeNote % signatures[k].note == 0 && map._voxStart[v] == map._start[k]
+                                 && Math.Abs(map._length[k] - length) < 1e-6;
+
+                    map._voxSignature.Add(alone && exact ? signatures[k] : FromTicks(length));
+                }
+
+                return map;
+            }
+
+            private static (int beat, int note) FromTicks(int ticks)
+            {
+                // ticks/192 in lowest terms, but not below quarter notes: 186 -> 31/32, 192 -> 4/4
+                int beat = Math.Max(1, ticks), note = Time.TicksPerWholeNote;
+                if (beat % 3 == 0)
+                {
+                    beat /= 3;
+                    note /= 3;
+                }
+
+                while (beat % 2 == 0 && note > 4)
+                {
+                    beat /= 2;
+                    note /= 2;
+                }
+
+                return (beat, note);
+            }
+
+            public (int beat, int note) SignatureOf(int voxMeasure) => _voxSignature[voxMeasure];
+
+            public int VoxMeasureOf(int kshMeasure) => _voxMeasure[Math.Max(1, Math.Min(kshMeasure, _voxMeasure.Length - 1))];
+
+            // VOX time of a line `fraction` of the way through KSH measure k
+            public Time ToTime(int kshMeasure, double fraction)
+            {
+                int k    = Math.Max(1, Math.Min(kshMeasure, _length.Length - 1));
+                int tick = (int)Math.Round(_start[k] + fraction * _length[k]);
+
+                int v = _voxStart.BinarySearch(tick);
+                if (v < 0)
+                    v = ~v - 1;
+                v = Math.Max(1, v);
+
+                int cellsPerBeat = Time.CellsPerBeat(_voxSignature[v]);
+                int within       = tick - _voxStart[v];
+                return new Time(v, within / cellsPerBeat + 1, within % cellsPerBeat);
+            }
+        }
+
         private static readonly string[] AudioExtensions = { ".ogg", ".mp3", ".wav", ".flac", ".m4a" };
 
         // Packs that went through some download services have their files renamed
@@ -171,6 +334,10 @@ namespace VoxCharger
                 string dir = Path.GetDirectoryName(Path.GetFullPath(kshFile));
                 if (File.Exists(Path.Combine(dir, name)))
                     return name;
+
+                string elsewhere = FindInFoldersAbove(dir, name);
+                if (elsewhere != null)
+                    return elsewhere;
 
                 var files  = Directory.GetFiles(dir);
                 string key = RelaxedFileName(Path.GetFileName(name));
@@ -193,6 +360,31 @@ namespace VoxCharger
             return name;
         }
 
+        // Charts that reuse another chart's music (difference charts) point into other folders of the
+        // pack, often with more or fewer "../" than the folder layout they were unpacked into needs, and
+        // charts in a sub folder of a song can use the song's music. Looks the path up, without its
+        // leading "../", from the chart folder and the folders above it. Returns the full path or null.
+        private static string FindInFoldersAbove(string dir, string name)
+        {
+            var parts = name.Replace('\\', '/').Split('/').ToList();
+            while (parts.Count > 1 && (parts[0] == ".." || parts[0] == "." || parts[0] == ""))
+                parts.RemoveAt(0);
+
+            // A plain file name only in the folder right above, a path up to four folders up
+            string relative = Path.Combine(parts.ToArray());
+            var folder      = parts.Count > 1 ? new DirectoryInfo(dir) : Directory.GetParent(dir);
+            int levels      = parts.Count > 1 ? 5 : 1;
+
+            for (int i = 0; folder != null && i < levels; i++, folder = folder.Parent)
+            {
+                string candidate = Path.Combine(folder.FullName, relative);
+                if (File.Exists(candidate))
+                    return Path.GetFullPath(candidate);
+            }
+
+            return null;
+        }
+
         private static string RelaxedFileName(string name)
         {
             return new string(name.Select(c => char.IsLetterOrDigit(c) || c == '.' ? char.ToLowerInvariant(c) : '_').ToArray());
@@ -209,6 +401,8 @@ namespace VoxCharger
 
             var time       = Time.Initial;
             var signature  = new Event.TimeSignature(time, 4, 4);
+            var nominalSignature  = (beat: 4, note: 4);                // last beat= line
+            bool signatureDeclared = false;                            // a beat= line applies to the next measure start
             var filter     = Event.LaserFilter.Peak;
             var cameras    = new Dictionary<Camera.WorkType, Camera>();
             var hitFx      = new Dictionary<Event.ButtonTrack, KshSoundEffect>();
@@ -231,6 +425,22 @@ namespace VoxCharger
             int measure   = 0;
 
             int measureCount = lines.Count(l => l.Trim() == "--");
+
+            // Gimmick signatures the tick grid can't hold: the measure layout is worked out up front
+            var measureMap = MeasureMap.Build(lines, measureCount);
+            if (measureMap != null)
+            {
+                (int beat, int note) previous = (0, 0);
+                for (int v = 1; v <= measureMap.VoxMeasureCount; v++)
+                {
+                    var sig = measureMap.SignatureOf(v);
+                    if (sig != previous)
+                        Events.Add(new Event.TimeSignature(new Time(v, 1, 0), sig.beat, sig.note));
+                    previous = sig;
+                }
+
+                Debug.WriteLine($"[KSH] Signatures off the tick grid: {measureCount} measures laid out as {measureMap.VoxMeasureCount}");
+            }
             int noteCount = 0;
 
             // Pre-scan for user-defined FX declarations (#define_fx <name> <params>)
@@ -304,7 +514,7 @@ namespace VoxCharger
                     // padded or trimmed to absorb the ms offset.
 
                     // Magic happens here!
-                    time = Time.FromOffset(position, signature);
+                    time = measureMap?.ToTime(measure, offset / (double)noteCount) ?? Time.FromOffset(position, signature);
                     if (time.Measure < 0)
                         continue; // Might happen when try to realign music offset
 
@@ -429,19 +639,16 @@ namespace VoxCharger
                             pendingStops.Add((start, stopTicks));
                             break;
                         }
-                        case "beat": 
-                            var sig = value.Split('/');
-                            if (sig.Length != 2 || !int.TryParse(sig[0], out int b) || !int.TryParse(sig[1], out int n))
-                                break;
-
+                        case "beat":
                             // Signature changes sit on a measure start; placed after the measure's first note
                             // line it applies to the next measure (KSH spec). The last one in a measure wins.
-                            var sigTime = new Time(offset > 0 ? time.Measure + 1 : time.Measure, 1, 0);
-                            foreach (var previous in Events[sigTime].OfType<Event.TimeSignature>().ToList())
-                                Events.Remove(previous);
-
-                            signature = new Event.TimeSignature(sigTime, b, n);
-                            Events.Add(signature);
+                            // The event is added when that measure starts (see "--"); lines before the
+                            // first note line of a measure have been read there already.
+                            if (TryParseBeat(value, out var declared) && (measure == 0 || offset > 0))
+                            {
+                                nominalSignature = declared;
+                                signatureDeclared = true;
+                            }
 
                             break;
                         case "fx-l":
@@ -679,7 +886,6 @@ namespace VoxCharger
                     // MusicOffsetMs), not to chart positions. Applying it
                     // here too would double-shift every event after measure 1
                     // and also introduce sub-beat residues.
-                    time = Time.FromOffset(position, signature);
                     for (int j = i + 1; j < lines.Length; j++)
                     {
                         string ln = lines[j].Trim();
@@ -689,8 +895,29 @@ namespace VoxCharger
                                 noteCount++;
                             else if (ln == "--")
                                 break;
+                            else if (noteCount == 0 && ln.IndexOf('=') is int eq && eq > 0
+                                     && ln.Substring(0, eq).Trim().Equals("beat", StringComparison.OrdinalIgnoreCase)
+                                     && TryParseBeat(ln.Substring(eq + 1).Trim(), out var declared))
+                            {
+                                nominalSignature = declared;
+                                signatureDeclared = true;
+                            }
                         }
                     }
+
+                    // A chart with a measure map has its signatures placed already
+                    if (signatureDeclared && measureMap == null)
+                    {
+                        var sigTime = new Time(measure, 1, 0);
+                        foreach (var previous in Events[sigTime].OfType<Event.TimeSignature>().ToList())
+                            Events.Remove(previous);
+
+                        signature = new Event.TimeSignature(sigTime, nominalSignature.beat, nominalSignature.note);
+                        Events.Add(signature);
+                    }
+                    signatureDeclared = false;
+
+                    time = measureMap?.ToTime(measure, 0) ?? Time.FromOffset(position, signature);
                 }
                 else if (IsNoteLine(line))
                 {
@@ -847,6 +1074,8 @@ namespace VoxCharger
             // The header's "--" opens the first measure and every later one closes a measure;
             // a trailing block without note lines (comments, #define_fx) is not a measure
             MeasureCount = offset == 0 ? Math.Max(0, measure - 1) : measure;
+            if (measureMap != null)
+                MeasureCount = measureMap.VoxMeasureOf(MeasureCount);
             int chartEndTick = Events.MeasureStartTick(MeasureCount + 1);
 
             // Holds and lasers still open at the end of the chart end with it

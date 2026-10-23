@@ -29,6 +29,17 @@ namespace VoxCharger
             _headers = new Dictionary<int, VoxHeader>();
         }
 
+        // For some reason, konmai decide to use int32 with thousands value for the BPM, e.g 18000 to represent 180.00 BPM
+        // Why? I don't know, probably the usual fuckery. Values that still read 1000 or more were stored scaled twice.
+        private static double ParseBpm(string text)
+        {
+            if (!long.TryParse(text?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long value))
+                return 0;
+
+            double bpm = value / 100D;
+            return bpm >= 1000 ? bpm / 100D : bpm;
+        }
+
         public void Load(string path, bool append = false)
         {
             _headers = append ? _headers : new Dictionary<int, VoxHeader>();
@@ -66,15 +77,8 @@ namespace VoxCharger
                 if (tag?.Attributes["id"] != null && int.TryParse(tag.Attributes["id"].Value, out int tagId))
                     header.TagId = tagId;
 
-                // For some reason, konmai decide to use int32 with thousands value for the BPM, e.g 18000 to represent 180.00 BPM
-                // Why? I don't know, probably the usual fuckery
-                string bpmMax = info.SelectSingleNode("bpm_max").InnerText;
-                header.BpmMax = double.Parse($"{bpmMax.Substring(0, bpmMax.Length - 2)}.{bpmMax.Substring(bpmMax.Length - 2)}");
-                header.BpmMax = header.BpmMax >= 1000 ? header.BpmMax / 100D : header.BpmMax;
-
-                string bpmMin = info.SelectSingleNode("bpm_min").InnerText;
-                header.BpmMin = double.Parse($"{bpmMin.Substring(0, bpmMin.Length - 2)}.{bpmMin.Substring(bpmMin.Length - 2)}");
-                header.BpmMin = header.BpmMin >= 1000 ? header.BpmMin / 100D : header.BpmMin;
+                header.BpmMax = ParseBpm(info.SelectSingleNode("bpm_max").InnerText);
+                header.BpmMin = ParseBpm(info.SelectSingleNode("bpm_min").InnerText);
 
                 header.Levels = new Dictionary<Difficulty, VoxLevelHeader>();
                 // Nabla (V7+) stores difnum as level*10 for every song, older databases store the level.

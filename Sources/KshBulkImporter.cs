@@ -38,6 +38,7 @@ namespace VoxCharger
         public class Song
         {
             public string    Folder;
+            public List<string> MoreFolders = new List<string>();         // same song elsewhere, fills in missing difficulties
             public string    MainFile;
             public string    Title;
             public string    Artist;
@@ -128,6 +129,10 @@ namespace VoxCharger
         private static List<Song> FindSongs(string root, Result result)
         {
             var songs = new List<Song>();
+
+            // The same song (title and artist) in another folder: a difficulty kept in a sub folder of
+            // the song, or a pack shipped twice. Its charts fill in difficulties the first one lacks.
+            var byKey = new Dictionary<string, Song>(StringComparer.OrdinalIgnoreCase);
             foreach (string folder in FindSongFolders(root))
             {
                 // One song per distinct title (same comparison as Exporter.GetCharts),
@@ -138,8 +143,21 @@ namespace VoxCharger
                     try
                     {
                         ReadTitleArtist(file, out string title, out string artist);
-                        if (seen.Add(Ksh.Exporter.NormalizeTitle(title)))
-                            songs.Add(new Song { Folder = folder, MainFile = file, Title = title, Artist = artist });
+                        if (!seen.Add(Ksh.Exporter.NormalizeTitle(title)))
+                            continue;
+
+                        // A sub folder of a song only needs the same title, its charts often name another artist
+                        string key = SongKey(Ksh.Exporter.NormalizeTitle(title), artist);
+                        if (byKey.TryGetValue(key, out var first) || (first = songs.LastOrDefault(s => IsSubFolder(folder, s.Folder) &&
+                                Ksh.Exporter.NormalizeTitle(s.Title) == Ksh.Exporter.NormalizeTitle(title))) != null)
+                        {
+                            first.MoreFolders.Add(folder);
+                            continue;
+                        }
+
+                        var song = new Song { Folder = folder, MainFile = file, Title = title, Artist = artist };
+                        byKey[key] = song;
+                        songs.Add(song);
                     }
                     catch (Exception ex)
                     {
@@ -149,6 +167,11 @@ namespace VoxCharger
             }
 
             return songs;
+        }
+
+        private static bool IsSubFolder(string folder, string parent)
+        {
+            return folder.StartsWith(parent.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void ReadTitleArtist(string kshFile, out string title, out string artist)
@@ -224,6 +247,15 @@ namespace VoxCharger
                         mainKsh.Parse(song.MainFile, parseOpt);
 
                         charts = Ksh.Exporter.GetCharts(song.Folder, mainKsh.Title);
+                        foreach (string folder in song.MoreFolders)
+                        {
+                            foreach (var chart in Ksh.Exporter.GetCharts(folder, mainKsh.Title))
+                            {
+                                if (!charts.ContainsKey(chart.Key))
+                                    charts[chart.Key] = chart.Value;
+                            }
+                        }
+
                         if (charts.Count == 0)
                         {
                             song.Error = "no charts parsed";
