@@ -41,7 +41,7 @@ namespace VoxCharger
         public static readonly Font SmallBold = new Font("Segoe UI", 8.25f, FontStyle.Bold);
         public static readonly Font Caption   = new Font("Segoe UI", 7.5f, FontStyle.Bold);
         public static readonly Font Tiny      = new Font("Segoe UI", 7f, FontStyle.Bold);
-        public static readonly Font Badge     = new Font("Segoe UI Semibold", 8.25f);
+        public static readonly Font Badge     = new Font("Segoe UI", 8.75f);
         public static readonly Font Mono      = new Font("Consolas", 8.25f);
         public static readonly Font MonoLarge = new Font("Consolas", 11.25f);
         public static readonly Font MonoFile  = new Font("Consolas", 9.75f);
@@ -429,12 +429,20 @@ namespace VoxCharger
             else
                 e.TextColor = Theme.Text;
 
+            // The menu lays text out from the top of the item; center it in the padded height
+            var r = e.TextRectangle;
+            e.TextRectangle = new Rectangle(r.X, (e.Item.Height - r.Height) / 2, r.Width, r.Height);
             base.OnRenderItemText(e);
         }
 
         protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
         {
             e.ArrowColor = Theme.TextDim;
+            if (e.Item != null)
+            {
+                var r = e.ArrowRectangle;
+                e.ArrowRectangle = new Rectangle(r.X, (e.Item.Height - r.Height) / 2, r.Width, r.Height);
+            }
             base.OnRenderArrow(e);
         }
 

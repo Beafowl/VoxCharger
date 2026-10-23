@@ -379,7 +379,7 @@ namespace VoxCharger
                 var strip = new Rectangle(jacketRect.X, jacketRect.Bottom - 18, jacketRect.Width, 18);
                 using (var brush = new SolidBrush(Theme.DifficultyColor(Difficulty, _header.InfVersion)))
                     g.FillRectangle(brush, strip);
-                Theme.DrawText(g, $"{DiffName} {_level.Level}", Theme.Tiny, Theme.OnAccent, strip, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                Theme.DrawText(g, $"{DiffName} {_level.Level}", Theme.Badge, Theme.OnAccent, strip, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 g.Clip = clip;
             }
 
