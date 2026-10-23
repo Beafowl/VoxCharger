@@ -77,6 +77,16 @@ namespace VoxCharger
                 header.BpmMin = header.BpmMin >= 1000 ? header.BpmMin / 100D : header.BpmMin;
 
                 header.Levels = new Dictionary<Difficulty, VoxLevelHeader>();
+                // Nabla (V7+) stores difnum as level*10 for every song, older databases store the level.
+                // VoxCharger writes *10 for Nabla songs; any value above 20 also gives a song away as *10
+                // (a stock song's NOV 2 is "20", which the old "> 20" check alone read as level 20)
+                bool timesTen = header.Version >= GameVersion.Nabla;
+                foreach (XmlNode diffInfo in music.SelectSingleNode("difficulty"))
+                {
+                    if (int.TryParse(diffInfo.SelectSingleNode("difnum")?.InnerText, out int value) && value > 20)
+                        timesTen = true;
+                }
+
                 foreach (XmlNode diffInfo in music.SelectSingleNode("difficulty"))
                 {
                     Difficulty current;
@@ -92,9 +102,7 @@ namespace VoxCharger
                         continue; // Unknown difficulty, 
 
                     int rawLevel = int.Parse(diffInfo.SelectSingleNode("difnum").InnerText);
-                    // Nabla (V7+) stores difnum as level*10 (e.g. 175 = level 17.5)
-                    // Older versions store raw level (e.g. 17)
-                    if (rawLevel > 20)
+                    if (timesTen)
                         rawLevel /= 10;
 
                     var lvHeader = new VoxLevelHeader

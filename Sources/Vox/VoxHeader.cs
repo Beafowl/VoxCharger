@@ -24,11 +24,6 @@ namespace VoxCharger
 
         public string CodeName => $"{Id:D4}_{Ascii}";
 
-        // Folder of the mix (or of the game's data) this song was read from, for views that combine
-        // several mixes. Null: the song belongs to the loaded mix.
-        public string SourcePath          { get; set; }
-        public string SourceMix           { get; set; }
-
         public VoxHeader()
         {
         }

@@ -14,17 +14,16 @@ namespace VoxCharger
     public partial class MainForm : Form
     {
         #region -- Variables --
-        private const string ViewAll     = "*all";
-        private const string ViewModsAll = "*mods";
+        // The game's own songs from data\others\music_db.xml, read-only
+        private const string ViewOriginal = "*original";
 
         private readonly Dictionary<string, Queue<Action>> _actions = new Dictionary<string, Queue<Action>>();
 
         // False while the loaded mix has changes that are not written yet; drives the Save button
         private bool _pristine = true;
 
-        // Mix name, ViewAll or ViewModsAll. Combined views list songs of several folders and are read-only.
+        // Mix name or ViewOriginal
         private string _view;
-        private List<VoxHeader> _combined;
 
         private enum SortMode { TitleAsc, TitleDesc, IdAsc, IdDesc }
         private SortMode _sortMode = SortMode.TitleAsc;
@@ -40,6 +39,7 @@ namespace VoxCharger
         private readonly ContextMenuStrip _listMenu  = DarkMenuRenderer.CreateMenu();
 
         private ToolStripMenuItem _deleteMixItem;
+        private ToolStripMenuItem _deleteSongItem;
         private ToolStripMenuItem _mixTagItem;
         private ToolStripMenuItem _startIdItem;
         private ToolStripMenuItem _reconvertItem;
@@ -55,10 +55,10 @@ namespace VoxCharger
         private const int EM_SETCUEBANNER = 0x1501;
 
         private bool HasGame  => !string.IsNullOrEmpty(AssetManager.GamePath);
-        private bool Combined => _view == ViewAll || _view == ViewModsAll;
-        private bool CanEdit  => HasGame && !Combined && !string.IsNullOrEmpty(_view) && !string.IsNullOrEmpty(AssetManager.MixName);
+        private bool Original => _view == ViewOriginal;
+        private bool CanEdit  => HasGame && !Original && !string.IsNullOrEmpty(_view) && !string.IsNullOrEmpty(AssetManager.MixName);
 
-        private IEnumerable<VoxHeader> CurrentHeaders => Combined ? (IEnumerable<VoxHeader>)_combined ?? new List<VoxHeader>() : AssetManager.Headers;
+        private IEnumerable<VoxHeader> CurrentHeaders => AssetManager.Headers;
 
         private ChartTile[] Tiles => new[] { NovTile, AdvTile, ExhTile, InfTile };
 
@@ -243,11 +243,11 @@ namespace VoxCharger
                 return;
 
             var chips = new List<(string text, bool accent, bool mono)> { ($"ID {header.Id}", false, true) };
-            string mix = Combined ? (header.SourceMix ?? "game") : AssetManager.MixName;
+            string mix = Original ? "original" : AssetManager.MixName;
             if (!string.IsNullOrEmpty(mix))
                 chips.Add((mix, true, false));
 
-            int tag = !Combined && AssetManager.MixTagId > 0 ? AssetManager.MixTagId : header.TagId;
+            int tag = AssetManager.MixTagId > 0 ? AssetManager.MixTagId : header.TagId;
             if (tag > 0)
                 chips.Add(($"tag {tag}", true, false));
 
@@ -276,7 +276,10 @@ namespace VoxCharger
             addSongs.DropDownItems.Add(DarkMenuRenderer.Item("From KSH folder…", OnBulkImportKshMenuClick));
             addSongs.DropDownItems.Add(DarkMenuRenderer.Item("From JSON…", OnImportJsonMenuClick));
 
-            _songsMenu.Items.AddRange(new ToolStripItem[] { addSong, addSongs });
+            _deleteSongItem = DarkMenuRenderer.Item("Delete song", OnRemoveButtonClick, "Del");
+            _deleteSongItem.Tag = "danger";
+            _songsMenu.Items.AddRange(new ToolStripItem[] { addSong, addSongs, new ToolStripSeparator(), _deleteSongItem });
+            _songsMenu.Opening += (s, e) => _deleteSongItem.Enabled = CanEdit && MusicListBox.SelectedItem is VoxHeader;
 
             _deleteMixItem = DarkMenuRenderer.Item("Delete", OnDeleteMixFileMenuClick);
             _deleteMixItem.Tag = "danger";
@@ -300,7 +303,7 @@ namespace VoxCharger
             });
 
             _reconvertItem  = DarkMenuRenderer.Item("Reconvert from ksm.dev", OnReconvertFromUrlClick);
-            _removeSongItem = DarkMenuRenderer.Item("Remove song", OnRemoveButtonClick, "Del");
+            _removeSongItem = DarkMenuRenderer.Item("Delete song", OnRemoveButtonClick, "Del");
             _removeSongItem.Tag = "danger";
             _listSeparator  = new ToolStripSeparator();
             _listMenu.Items.AddRange(new ToolStripItem[] { DarkMenuRenderer.Item("Show in Explorer", OnExplorerEditMenuClick), _reconvertItem, _listSeparator, _removeSongItem });
@@ -352,9 +355,9 @@ namespace VoxCharger
             }
 
             _viewMenu.Items.Clear();
-            _viewMenu.Items.Add(DarkMenuRenderer.Group("COMBINED"));
-            _viewMenu.Items.Add(ViewItem("All", ViewAll, "every mix and the game's songs"));
-            _viewMenu.Items.Add(ViewItem("All (mods only)", ViewModsAll, "every mix, without the game's songs"));
+            _viewMenu.Items.Add(DarkMenuRenderer.Group("GAME"));
+            int original = AssetManager.CountOriginalSongs();
+            _viewMenu.Items.Add(ViewItem("Original", ViewOriginal, $"{original} songs, read-only"));
 
             var mixes = AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
             _viewMenu.Items.Add(new ToolStripSeparator());
@@ -426,14 +429,14 @@ namespace VoxCharger
 
             var mixes = AssetManager.GetMixes();
             string view = UiSettings.LastView;
-            if (view != ViewAll && view != ViewModsAll && !mixes.Contains(view))
-                view = mixes.OrderBy(m => m, StringComparer.OrdinalIgnoreCase).FirstOrDefault() ?? ViewAll;
+            if (view != ViewOriginal && !mixes.Contains(view))
+                view = mixes.OrderBy(m => m, StringComparer.OrdinalIgnoreCase).FirstOrDefault() ?? ViewOriginal;
 
             SelectView(view, false);
             return true;
         }
 
-        // Switches the song list to a mix or a combined view
+        // Switches the song list to a mix or the game's own songs
         private void SelectView(string view, bool confirm = true)
         {
             if (confirm && view != _view && !ConfirmUnsaved("Change mix"))
@@ -442,15 +445,7 @@ namespace VoxCharger
             Cursor = Cursors.WaitCursor;
             try
             {
-                if (view == ViewAll || view == ViewModsAll)
-                {
-                    _combined = AssetManager.LoadCombined(view == ViewAll);
-                }
-                else
-                {
-                    AssetManager.LoadMix(view);
-                    _combined = null;
-                }
+                AssetManager.LoadMix(view == ViewOriginal ? string.Empty : view);
 
                 _view = view;
                 UiSettings.LastView = view;
@@ -459,7 +454,6 @@ namespace VoxCharger
             {
                 MessageBox.Show(ex.Message, "Open mix", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 _view = null;
-                _combined = null;
             }
             finally
             {
@@ -472,10 +466,9 @@ namespace VoxCharger
 
             switch (_view)
             {
-                case null:        MixButton.Text = "Choose a mix"; MixButton.SubText = null; break;
-                case ViewAll:     MixButton.Text = "All"; break;
-                case ViewModsAll: MixButton.Text = "All (mods only)"; break;
-                default:          MixButton.Text = _view; break;
+                case null:         MixButton.Text = "Choose a mix"; MixButton.SubText = null; break;
+                case ViewOriginal: MixButton.Text = "Original"; break;
+                default:           MixButton.Text = _view; break;
             }
 
             MusicListBox.ClearSelected();
@@ -491,7 +484,7 @@ namespace VoxCharger
 
             MixButton.SubText       = _view == null ? null : $"{count} song{(count == 1 ? "" : "s")}";
             MixButton.Invalidate();
-            ListCaptionLabel.Text   = _view == ViewAll ? "Songs of every mix and the game" : _view == ViewModsAll ? "Songs of every mix" : "Songs in this mix";
+            ListCaptionLabel.Text   = Original ? "Songs of the game, read-only" : "Songs in this mix";
             SongsButton.Enabled     = CanEdit;
             MixMenuButton.Enabled   = game;
             _deleteMixItem.Enabled  = CanEdit;
@@ -563,7 +556,7 @@ namespace VoxCharger
 
                 AssetManager.Initialize(AssetManager.GamePath);
                 var next = AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
-                SelectView(next ?? ViewAll, false);
+                SelectView(next ?? ViewOriginal, false);
             }
             catch (Exception ex)
             {
