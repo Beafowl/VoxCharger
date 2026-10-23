@@ -184,7 +184,9 @@ namespace VoxCharger
             bool selected = (e.State & DrawItemState.Selected) != 0;
             var rowColor = selected ? SelectedRow : e.Index == _hover ? HoverRow : BackColor;
 
-            using (var buffer = new Bitmap(Math.Max(1, bounds.Width), Math.Max(1, bounds.Height)))
+            // No alpha channel: GDI text clears the alpha of the pixels it draws, so on an ARGB buffer
+            // the smoothing around every glyph would vanish when the row is copied to the list
+            using (var buffer = new Bitmap(Math.Max(1, bounds.Width), Math.Max(1, bounds.Height), System.Drawing.Imaging.PixelFormat.Format24bppRgb))
             using (var bg = Graphics.FromImage(buffer))
             {
                 bg.Clear(rowColor);
