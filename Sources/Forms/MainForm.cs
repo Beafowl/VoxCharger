@@ -39,6 +39,7 @@ namespace VoxCharger
         private readonly ContextMenuStrip _listMenu  = DarkMenuRenderer.CreateMenu();
 
         private ToolStripMenuItem _deleteMixItem;
+        private ToolStripMenuItem _gameFolderItem;
         private ToolStripMenuItem _deleteSongItem;
         private ToolStripMenuItem _mixTagItem;
         private ToolStripMenuItem _startIdItem;
@@ -90,7 +91,8 @@ namespace VoxCharger
             LayoutWindow();
 
             string gamePath = null;
-            foreach (string candidate in new[] { Application.StartupPath, UiSettings.GamePath })
+            // The folder last opened in VoxCharger first, so a changed game folder sticks
+            foreach (string candidate in new[] { UiSettings.GamePath, Application.StartupPath })
             {
                 if (!string.IsNullOrEmpty(candidate) && File.Exists(Path.Combine(candidate, @"data\others\music_db.xml")))
                 {
@@ -262,9 +264,13 @@ namespace VoxCharger
 
             _mixTagItem  = DarkMenuRenderer.Item("Set mix tag…", OnMixTagFileMenuClick, "");
             _startIdItem = DarkMenuRenderer.Item("Set starting ID…", OnMixStartIdFileMenuClick, "");
-            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem });
+            _gameFolderItem = DarkMenuRenderer.Item("Change game folder…", OnGamePathButtonClick, "");
+            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem, new ToolStripSeparator(), _gameFolderItem });
             _toolsMenu.Opening += (s, e) =>
             {
+                _mixTagItem.Enabled  = CanEdit;
+                _startIdItem.Enabled = CanEdit;
+                _gameFolderItem.ShortcutKeyDisplayString = ShortPath(AssetManager.GamePath);
                 _mixTagItem.ShortcutKeyDisplayString  = AssetManager.MixTagId > 0 ? AssetManager.MixTagId.ToString() : "none";
                 _startIdItem.ShortcutKeyDisplayString = AssetManager.MixStartId > 0 ? AssetManager.MixStartId.ToString() : "none";
             };
@@ -388,6 +394,16 @@ namespace VoxCharger
             }
         }
 
+        // Last two folders of a path, e.g. "KFC-2026071400\contents"
+        private static string ShortPath(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return "none";
+
+            var parts = path.TrimEnd('\\', '/').Split('\\', '/');
+            return parts.Length <= 2 ? path : Path.Combine("…", parts[parts.Length - 2], parts[parts.Length - 1]);
+        }
+
         private bool OpenGame(string gamePath)
         {
             try
@@ -463,7 +479,7 @@ namespace VoxCharger
             SongsButton.Enabled     = CanEdit;
             MixMenuButton.Enabled   = game;
             _deleteMixItem.Enabled  = CanEdit;
-            ToolsButton.Enabled     = CanEdit;
+            ToolsButton.Enabled     = game;
             SaveButton.Enabled      = CanEdit && !_pristine;
             SortButton.Enabled      = game;
             MixButton.Enabled       = true;
