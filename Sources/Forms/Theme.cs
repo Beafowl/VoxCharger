@@ -262,6 +262,12 @@ namespace VoxCharger
                         page.BackColor = Window;
                         page.ForeColor = Text;
                         break;
+                    case LinkLabel link:
+                        link.LinkColor        = AccentText;
+                        link.ActiveLinkColor  = AccentHot;
+                        link.VisitedLinkColor = AccentText;
+                        link.BackColor        = Color.Transparent;
+                        break;
                     case Label label:
                         if (label.ForeColor == SystemColors.ControlText || label.ForeColor.IsSystemColor)
                             label.ForeColor = Text;

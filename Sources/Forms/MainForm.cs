@@ -68,7 +68,7 @@ namespace VoxCharger
         {
             InitializeComponent();
 
-            var icon = IconLoader.ForCurrentTheme();
+            var icon = IconLoader.ForDarkUi();
             if (icon != null) Icon = icon;
 
             BuildMenus();

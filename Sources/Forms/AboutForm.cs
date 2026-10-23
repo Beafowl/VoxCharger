@@ -10,20 +10,19 @@ namespace VoxCharger
             InitializeComponent();
             Theme.Attach(this);
 
-            // Form titlebar / taskbar icon follows Windows theme so it stays
-            // legible against the OS chrome. The big in-content profile
-            // picture (the 80x80 image on the left of the form) is always
-            // the dark icon — it sits on the form's light background, where
-            // the white variant would disappear.
-            var titlebarIcon = IconLoader.ForCurrentTheme();
+            // The dialog is dark, so both the title bar icon and the big picture use the white logo
+            var titlebarIcon = IconLoader.ForDarkUi();
             if (titlebarIcon != null) Icon = titlebarIcon;
 
             try
             {
-                using (var dark = IconLoader.Dark())
+                using (var light = IconLoader.Light())
                 {
-                    if (dark != null)
-                        ProfilePictureBox.Image = dark.ToBitmap();
+                    if (light != null)
+                    {
+                        using (var large = new System.Drawing.Icon(light, 128, 128).ToBitmap())
+                            ProfilePictureBox.Image = JacketCache.Scale(large, 80);
+                    }
                 }
             }
             catch

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
@@ -6,12 +6,10 @@ using System.Reflection;
 namespace VoxCharger
 {
     // Two-icon scheme:
-    //   * icon_dark.ico — the dark-coloured icon, designed to read on light
-    //                     backgrounds (the default Windows theme + the
-    //                     About form's content area).
-    //   * icon.ico      — the white/light icon, for dark Windows themes
-    //                     where the dark icon disappears against the
-    //                     taskbar.
+    //   * icon.ico      — the white logo (16 to 256 px). The app's windows are
+    //                     always dark, so their title bar and taskbar icon is
+    //                     this one; it is also the exe's icon.
+    //   * icon_dark.ico — the black logo, for light backgrounds.
     //
     // Both .ico files live in Resources/ and are embedded as assembly
     // resources (see csproj). This loader pulls them out by name and adds a
@@ -30,6 +28,9 @@ namespace VoxCharger
 
         public static Icon Dark()  => LoadEmbedded(DarkResource);
         public static Icon Light() => LoadEmbedded(LightResource);
+
+        // The windows use a dark theme regardless of the Windows setting
+        public static Icon ForDarkUi() => Light();
 
         // True when Windows is configured to render apps with a light theme
         // (taskbar, titlebar, app chrome). False = dark theme. Defaults to
