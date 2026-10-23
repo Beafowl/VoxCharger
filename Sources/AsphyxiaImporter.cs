@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -14,11 +14,11 @@ namespace VoxCharger
     // the same list gets the same chart→mid mapping the server has.
     //
     // Pipeline:
-    //   Phase 0  download + extract every chart's zip (parallel, ≤ 4)
-    //   Phase 1  parse + export assets per chart (parallel, ≤ ProcessorCount, capped at 4)
-    //            Each chart's parsed KSH, chart data, jackets and temp files are released
-    //            as soon as its assets are written, so memory stays flat on large lists.
-    //   Phase 2  attach headers to AssetManager.Headers (serial, mid order)
+    //   Download + extract each chart's zip (4 at a time) and hand it to the converters as soon as it
+    //   is on disk; parse + export assets with AssetManager.ConvertWorkers converters meanwhile.
+    //   Each chart's parsed KSH, chart data, jackets and temp files are released as soon as its
+    //   assets are written, so memory stays flat on large lists.
+    //   Finally attach headers to AssetManager.Headers (serial, mid order).
     //
     // The caller owns AssetManager state — Initialize + LoadOrRepairMix
     // before calling, and Save after success. The CLI driver and the GUI
@@ -69,8 +69,8 @@ namespace VoxCharger
             ManifestRecorder.BeginBatch();
             try
             {
-                DownloadAll(items, progress);
-                ExportAll(items, progress);
+                FfmpegProvider.Require((p, s) => { progress.SetPercent(p); progress.SetStatus(s); });
+                DownloadAndExport(items, progress);
                 AttachAll(items, result, progress);
             }
             finally
@@ -107,120 +107,129 @@ namespace VoxCharger
             }
         }
 
-        private static void DownloadAll(List<Item> items, Progress progress)
+        // Downloads run 4 at a time (more is rude to ksm.dev's CDN); each finished download goes
+        // straight into the queue the converters work through, so converting overlaps downloading
+        private static void DownloadAndExport(List<Item> items, Progress progress)
         {
-            progress.SetStatus($"Downloading {items.Count} chart(s)...");
-            int done = 0;
-            // Single-flight per chart, but up to 4 charts concurrently. Higher
-            // is rude to ksm.dev's CDN and saturates a typical home upload-side
-            // before it helps the download path.
-            using (var sem = new SemaphoreSlim(4))
+            int downloaded = 0, converted = 0, total = items.Count;
+            void Report(string status)
             {
-                var tasks = items.Select(it => Task.Run(() =>
+                progress.SetPercent((downloaded + converted) / (2f * Math.Max(1, total)) * 95f);
+                progress.SetStatus($"Downloaded {downloaded}/{total}, converted {converted}/{total}: {status}");
+            }
+
+            using (var queue = new BlockingCollection<Item>())
+            {
+                var downloads = Task.Run(() =>
                 {
-                    sem.Wait();
                     try
                     {
-                        using (var dl = new KsmDownloader())
+                        Parallel.ForEach(items, new ParallelOptions { MaxDegreeOfParallelism = 4 }, it =>
                         {
-                            it.TempDir = dl.DownloadAndExtractDirect(it.Song.downloadUrl);
-                        }
-                        it.KshPath = KsmDownloader.FindKshFile(it.TempDir);
-                        if (it.KshPath == null)
-                            it.Error = "no .ksh in archive";
-                    }
-                    catch (Exception ex)
-                    {
-                        it.Error = "download failed: " + ex.Message;
+                            try
+                            {
+                                using (var dl = new KsmDownloader())
+                                    it.TempDir = dl.DownloadAndExtractDirect(it.Song.downloadUrl);
+
+                                it.KshPath = KsmDownloader.FindKshFile(it.TempDir);
+                                if (it.KshPath == null)
+                                    it.Error = "no .ksh in archive";
+                            }
+                            catch (Exception ex)
+                            {
+                                it.Error = "download failed: " + ex.Message;
+                            }
+                            finally
+                            {
+                                Interlocked.Increment(ref downloaded);
+                                queue.Add(it);
+                                Report(it.Song.title);
+                            }
+                        });
                     }
                     finally
                     {
-                        int n = Interlocked.Increment(ref done);
-                        progress.SetPercent((n / (float)items.Count) * 33f);
-                        progress.SetStatus($"Downloaded {n}/{items.Count}: {it.Song.title}");
-                        sem.Release();
+                        queue.CompleteAdding();
+                    }
+                });
+
+                var converters = Enumerable.Range(0, AssetManager.ConvertWorkers).Select(_ => Task.Run(() =>
+                {
+                    foreach (var it in queue.GetConsumingEnumerable())
+                    {
+                        if (it.Error == null)
+                            Export(it, progress);
+
+                        Interlocked.Increment(ref converted);
+                        Report(it.Song.title);
                     }
                 })).ToArray();
-                Task.WaitAll(tasks);
+
+                Task.WaitAll(converters.Concat(new[] { downloads }).ToArray());
             }
         }
 
-        private static void ExportAll(List<Item> items, Progress progress)
+        private static void Export(Item it, Progress progress)
         {
-            progress.SetStatus("Converting assets...");
-            int done = 0;
-            var live = items.Where(i => i.Error == null).ToList();
-            int maxDegree = Math.Max(1, Math.Min(Environment.ProcessorCount, 4));
-
-            Parallel.ForEach(
-                live,
-                new ParallelOptions { MaxDegreeOfParallelism = maxDegree },
-                it =>
+            Dictionary<Difficulty, ChartInfo> charts = null;
+            try
+            {
+                var mainKsh = new Ksh();
+                mainKsh.Parse(it.KshPath);
+                string folder = Path.GetDirectoryName(Path.GetFullPath(it.KshPath));
+                charts = Ksh.Exporter.GetCharts(folder, mainKsh.Title);
+                if (charts.Count == 0)
                 {
-                    Dictionary<Difficulty, ChartInfo> charts = null;
-                    try
-                    {
-                        var mainKsh = new Ksh();
-                        mainKsh.Parse(it.KshPath);
-                        string folder = Path.GetDirectoryName(Path.GetFullPath(it.KshPath));
-                        charts = Ksh.Exporter.GetCharts(folder, mainKsh.Title);
-                        if (charts.Count == 0)
-                        {
-                            it.Error = "no charts parsed";
-                            return;
-                        }
+                    it.Error = "no charts parsed";
+                    return;
+                }
 
-                        var header = mainKsh.ToHeader();
-                        header.Id          = it.Mid;
-                        header.Version     = GameVersion.Nabla;
-                        header.GenreId     = 16;
-                        header.BackgroundId = 0;
-                        header.Levels      = new Dictionary<Difficulty, VoxLevelHeader>();
+                var header = mainKsh.ToHeader();
+                header.Id          = it.Mid;
+                header.Version     = GameVersion.Nabla;
+                header.GenreId     = 16;
+                header.BackgroundId = 0;
+                header.Levels      = new Dictionary<Difficulty, VoxLevelHeader>();
 
-                        // Asphyxia's curated list carries cleaner ksm.dev
-                        // metadata than what `Ksh.ToHeader()` reads from
-                        // the file's title/artist tags (which are often
-                        // truncated or wrongly-encoded by upstream
-                        // converters). Prefer the JSON when present.
-                        if (!string.IsNullOrWhiteSpace(it.Song.title))
-                            header.Title = it.Song.title;
-                        if (!string.IsNullOrWhiteSpace(it.Song.artist))
-                            header.Artist = it.Song.artist;
+                // Asphyxia's curated list carries cleaner ksm.dev
+                // metadata than what `Ksh.ToHeader()` reads from
+                // the file's title/artist tags (which are often
+                // truncated or wrongly-encoded by upstream
+                // converters). Prefer the JSON when present.
+                if (!string.IsNullOrWhiteSpace(it.Song.title))
+                    header.Title = it.Song.title;
+                if (!string.IsNullOrWhiteSpace(it.Song.artist))
+                    header.Artist = it.Song.artist;
 
-                        // Stable ASCII code derived from the title; same
-                        // sanitization the asphyxia bulk path uses.
-                        if (string.IsNullOrEmpty(header.Ascii))
-                            header.Ascii = VoxHeader.ToAscii(it.Song.title);
+                // Stable ASCII code derived from the title; same
+                // sanitization the asphyxia bulk path uses.
+                if (string.IsNullOrEmpty(header.Ascii))
+                    header.Ascii = VoxHeader.ToAscii(it.Song.title);
 
-                        var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
-                        audioOptions.NormalizeLoudness = true;
-                        audioOptions.MusicOffsetMs     = mainKsh.MusicOffset;
-                        var parseOpt = Program.ApplyLeadInAndTailPublic(mainKsh, audioOptions);
-                        header.Volume = audioOptions.TargetVolume;
+                var audioOptions = AudioImportOptions.WithFormat(AudioFormat.Iidx);
+                audioOptions.NormalizeLoudness = true;
+                audioOptions.MusicOffsetMs     = mainKsh.MusicOffset;
+                var parseOpt = Program.ApplyLeadInAndTailPublic(mainKsh, audioOptions);
+                header.Volume = audioOptions.TargetVolume;
 
-                        var exporter = new Ksh.Exporter(mainKsh);
-                        exporter.Export(header, charts, parseOpt, audioOptions);
+                var exporter = new Ksh.Exporter(mainKsh);
+                exporter.Export(header, charts, parseOpt, audioOptions);
 
-                        if (exporter.Action != null)
-                            exporter.Action.Invoke();
+                if (exporter.Action != null)
+                    exporter.Action.Invoke();
 
-                        it.Header = header;
-                        progress.Write($"  OK   ID {header.Id} {header.Title}");
-                    }
-                    catch (Exception ex)
-                    {
-                        it.Error = "convert failed: " + ex.Message;
-                        progress.Write($"  FAIL ID {it.Mid} {it.Song.title}: {ex.Message}");
-                    }
-                    finally
-                    {
-                        Release(it, charts);
-
-                        int n = Interlocked.Increment(ref done);
-                        progress.SetPercent(33f + (n / (float)live.Count) * 62f);
-                        progress.SetStatus($"Converted {n}/{live.Count}: {it.Song.title}");
-                    }
-                });
+                it.Header = header;
+                progress.Write($"  OK   ID {header.Id} {header.Title}");
+            }
+            catch (Exception ex)
+            {
+                it.Error = "convert failed: " + ex.Message;
+                progress.Write($"  FAIL ID {it.Mid} {it.Song.title}: {ex.Message}");
+            }
+            finally
+            {
+                Release(it, charts);
+            }
         }
 
         // Everything the exporter produced is on disk by now; only the header metadata

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -205,7 +205,7 @@ namespace VoxCharger
         {
             progress.SetStatus("Converting charts...");
             int done = 0;
-            int maxDegree = Math.Max(1, Math.Min(Environment.ProcessorCount, 4));
+            int maxDegree = AssetManager.ConvertWorkers;
 
             Parallel.ForEach(
                 songs,

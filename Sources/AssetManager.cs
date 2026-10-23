@@ -100,6 +100,10 @@ namespace VoxCharger
         private static MusicDb _internalHeaders = null;
         private static int _lastOriginalId = 0;
 
+        // Songs converted at the same time by the bulk and list imports. Each one runs ffmpeg and holds
+        // the decoded audio in memory; leaves two hardware threads for the rest of the system.
+        public static int ConvertWorkers => Math.Max(1, Math.Min(Environment.ProcessorCount - 2, 8));
+
         public static string MixName { get; private set; }
 
         public static string GamePath { get; private set; }
@@ -415,11 +419,10 @@ namespace VoxCharger
             {
                 if (output.EndsWith(".s3v"))
                 {
-                    // Encode S3V file using ffmpeg (used for preview audio)
-                    // Fall back to 2dx if ffmpeg is not available
-                    if (FindExecutable(S3VTool.ConverterFileName) != null)
+                    // Encode S3V file using ffmpeg (downloaded on first use when needed). Without
+                    // ffmpeg and without normalization, a 2dx file is written instead
+                    if (FfmpegProvider.Find() != null || opt.NormalizeLoudness)
                     {
-                        S3VTool.ConverterFileName = FindExecutable(S3VTool.ConverterFileName);
                         S3VTool.Convert(source, output, opt);
 
                         // Remove conflicting 2dx file
@@ -771,22 +774,6 @@ namespace VoxCharger
         #endregion
 
         #region --- Utilities ---
-
-        private static string FindExecutable(string fileName)
-        {
-            if (File.Exists(fileName))
-                return Path.GetFullPath(fileName);
-
-            var paths = Environment.GetEnvironmentVariable("PATH")?.Split(';') ?? new string[0];
-            foreach (var dir in paths)
-            {
-                string full = Path.Combine(dir.Trim(), fileName);
-                if (File.Exists(full))
-                    return full;
-            }
-
-            return null;
-        }
 
         #endregion
     }

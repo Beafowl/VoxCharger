@@ -744,6 +744,10 @@ namespace VoxCharger
 
         private void OnSingleImportMenuClick(object sender, EventArgs e)
         {
+            // Audio conversion needs ffmpeg; offers the download when it is missing
+            if (!FfmpegProvider.EnsureAvailable(this))
+                return;
+
             using (var browser = new OpenFileDialog())
             {
                 browser.Filter = "KShoot Mania Chart|*.ksh";
@@ -783,6 +787,10 @@ namespace VoxCharger
         // KsmDownloader.NormalizeDownloadUrl appends /download as needed.
         private void OnImportKsmDevMenuClick(object sender, EventArgs e)
         {
+            // Audio conversion needs ffmpeg; offers the download when it is missing
+            if (!FfmpegProvider.EnsureAvailable(this))
+                return;
+
             string url;
             using (var prompt = new InputForm("Import from ksm.dev", "Paste a ksm.dev song URL:"))
             {
@@ -897,6 +905,10 @@ namespace VoxCharger
 
         private void OnBulkImportKshMenuClick(object sender, EventArgs e)
         {
+            // Audio conversion needs ffmpeg; offers the download when it is missing
+            if (!FfmpegProvider.EnsureAvailable(this))
+                return;
+
             using (var browser = new CommonOpenFileDialog())
             {
                 browser.IsFolderPicker = true;
@@ -933,6 +945,10 @@ namespace VoxCharger
         // From JSON: an Asphyxia curated list (songs with ksm.dev ids) or a mix manifest (charts with URLs)
         private void OnImportJsonMenuClick(object sender, EventArgs e)
         {
+            // Audio conversion needs ffmpeg; offers the download when it is missing
+            if (!FfmpegProvider.EnsureAvailable(this))
+                return;
+
             if (!CanEdit)
                 return;
 
@@ -1308,6 +1324,10 @@ namespace VoxCharger
         // (typically the same one the chart had).
         private void OnReconvertFromUrlClick(object sender, EventArgs e)
         {
+            // Audio conversion needs ffmpeg; offers the download when it is missing
+            if (!FfmpegProvider.EnsureAvailable(this))
+                return;
+
             var header = MusicListBox.SelectedItem as VoxHeader;
             if (header == null) return;
             if (string.IsNullOrEmpty(AssetManager.MixPath)) return;
@@ -1722,6 +1742,10 @@ namespace VoxCharger
                 foreach (var (file, preview) in new[] { (editor.MusicFile, false), (editor.PreviewFile, true) })
                 {
                     if (string.IsNullOrEmpty(file) || !File.Exists(file))
+                        continue;
+
+                    if (!file.EndsWith(".2dx", StringComparison.OrdinalIgnoreCase) && !file.EndsWith(".s3v", StringComparison.OrdinalIgnoreCase) &&
+                        !FfmpegProvider.EnsureAvailable(this))
                         continue;
 
                     string tmp = Path.Combine(Path.GetTempPath(), $"{Path.GetRandomFileName()}{Path.GetExtension(file)}");

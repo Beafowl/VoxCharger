@@ -21,6 +21,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <IntermediateOutputPath>.\Temp</IntermediateOutputPath>
     <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
@@ -32,6 +33,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <IntermediateOutputPath>.\Temp</IntermediateOutputPath>
     <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>Build\Release\</OutputPath>
@@ -258,6 +260,7 @@
     </Compile>
     <Compile Include="Sources\Encoders\DxEncoder.cs" />
     <Compile Include="Sources\Encoders\LoudnessNormalizer.cs" />
+    <Compile Include="Sources\Encoders\FfmpegProvider.cs" />
     <Compile Include="Sources\Events\Controller\Camera.cs" />
     <Compile Include="Sources\Events\Controller\Radian.cs" />
     <Compile Include="Sources\Events\Controller\LaneClear.cs" />
