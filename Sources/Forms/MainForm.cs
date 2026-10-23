@@ -305,11 +305,16 @@ namespace VoxCharger
             {
                 var button = pair.Item2;
                 pair.Item1.Closed += (s, e) => { button.Highlighted = false; button.Invalidate(); };
+                DropDownToggle.Attach(pair.Item1, button);
             }
         }
 
         private void ShowMenu(ContextMenuStrip menu, FlatButton button, bool above, bool alignRight = false)
         {
+            // Clicking the button of an open menu closes it
+            if (!DropDownToggle.ShouldOpen(menu))
+                return;
+
             button.Highlighted = true;
             button.Invalidate();
             menu.MinimumSize = new Size(alignRight ? 0 : Math.Min(button.Width, 360), 0);

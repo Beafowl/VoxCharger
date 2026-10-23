@@ -144,7 +144,12 @@ namespace VoxCharger
         private void ShowCalendar(Control anchor)
         {
             if (_calendarPopup == null)
+            {
                 CreateCalendar();
+                DropDownToggle.Attach(_calendarPopup, anchor);
+            }
+            else if (!DropDownToggle.ShouldOpen(_calendarPopup))
+                return;
 
             if (DateTime.TryParseExact(_date.Text.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var current))
                 _calendar.SetDate(current);

@@ -501,6 +501,47 @@ namespace VoxCharger
         }
     }
 
+    // A dropdown closes itself on the mouse-down that lands on the button that opened it, and that
+    // button's Click then opened it again. Remembers such a close so the click leaves it closed.
+    public static class DropDownToggle
+    {
+        private class State
+        {
+            public int? ClickedAwayAt;          // closed by a mouse-down outside the dropdown
+            public bool ClosedByOwner;          // ... and that mouse-down went to the owner button
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ToolStripDropDown, State> _states =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<ToolStripDropDown, State>();
+
+        public static void Attach(ToolStripDropDown dropDown, Control owner)
+        {
+            var state = _states.GetValue(dropDown, _ => new State());
+            dropDown.Closed += (s, e) =>
+            {
+                if (e.CloseReason == ToolStripDropDownCloseReason.AppClicked)
+                    state.ClickedAwayAt = Environment.TickCount;
+            };
+
+            // The dropdown closes while the mouse-down is filtered, the button gets it right after
+            owner.MouseDown += (s, e) =>
+            {
+                state.ClosedByOwner = state.ClickedAwayAt != null && unchecked(Environment.TickCount - state.ClickedAwayAt.Value) < 250;
+                state.ClickedAwayAt = null;
+            };
+        }
+
+        // False when this click is the one that just closed the dropdown
+        public static bool ShouldOpen(ToolStripDropDown dropDown)
+        {
+            if (!_states.TryGetValue(dropDown, out var state) || !state.ClosedByOwner)
+                return true;
+
+            state.ClosedByOwner = false;
+            return false;
+        }
+    }
+
     public enum ButtonKind { Secondary, Primary, Ghost, Danger }
     public enum ButtonGlyph { None, Plus, Save, Layers, Close, Folder, Calendar }
 
