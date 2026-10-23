@@ -54,7 +54,6 @@
             this.GamePathButton     = new VoxCharger.FlatButton();
             this.MetadataCard       = new VoxCharger.CardPanel();
             this.JacketBox          = new System.Windows.Forms.PictureBox();
-            this.ChipsLabel         = new System.Windows.Forms.Label();
             this.TitleLabel         = new System.Windows.Forms.Label();
             this.ArtistLabel        = new System.Windows.Forms.Label();
             this.ExplorerButton     = new VoxCharger.FlatButton();
@@ -63,7 +62,10 @@
             this.VolumeTile         = new VoxCharger.StatTile();
             this.BackgroundTile     = new VoxCharger.StatTile();
             this.DateTile           = new VoxCharger.StatTile();
-            this.FilesLabel         = new System.Windows.Forms.Label();
+            this.VersionTile        = new VoxCharger.StatTile();
+            this.TagTile            = new VoxCharger.StatTile();
+            this.MusicTile          = new VoxCharger.StatTile();
+            this.PreviewTile        = new VoxCharger.StatTile();
             this.ChartsCard         = new VoxCharger.CardPanel();
             this.ChartsTitleLabel   = new System.Windows.Forms.Label();
             this.ChartsSubLabel     = new System.Windows.Forms.Label();
@@ -221,7 +223,6 @@
             // SongsButton
             //
             this.SongsButton.Chevron = true;
-            this.SongsButton.ChevronUp = true;
             this.SongsButton.ChevronAtEdge = true;
             this.SongsButton.Glyph = VoxCharger.ButtonGlyph.Plus;
             this.SongsButton.Name = "SongsButton";
@@ -231,7 +232,6 @@
             // MixMenuButton
             //
             this.MixMenuButton.Chevron = true;
-            this.MixMenuButton.ChevronUp = true;
             this.MixMenuButton.ChevronAtEdge = true;
             this.MixMenuButton.Name = "MixMenuButton";
             this.MixMenuButton.Text = "Mix";
@@ -268,7 +268,6 @@
             // MetadataCard
             //
             this.MetadataCard.Controls.Add(this.JacketBox);
-            this.MetadataCard.Controls.Add(this.ChipsLabel);
             this.MetadataCard.Controls.Add(this.TitleLabel);
             this.MetadataCard.Controls.Add(this.ArtistLabel);
             this.MetadataCard.Controls.Add(this.ExplorerButton);
@@ -277,7 +276,10 @@
             this.MetadataCard.Controls.Add(this.VolumeTile);
             this.MetadataCard.Controls.Add(this.BackgroundTile);
             this.MetadataCard.Controls.Add(this.DateTile);
-            this.MetadataCard.Controls.Add(this.FilesLabel);
+            this.MetadataCard.Controls.Add(this.VersionTile);
+            this.MetadataCard.Controls.Add(this.TagTile);
+            this.MetadataCard.Controls.Add(this.MusicTile);
+            this.MetadataCard.Controls.Add(this.PreviewTile);
             this.MetadataCard.Name = "MetadataCard";
             this.MetadataCard.Visible = false;
             //
@@ -286,16 +288,10 @@
             this.JacketBox.BackColor = VoxCharger.Theme.Card;
             this.JacketBox.Cursor = System.Windows.Forms.Cursors.Hand;
             this.JacketBox.Name = "JacketBox";
-            this.JacketBox.Size = new System.Drawing.Size(88, 88);
+            this.JacketBox.Size = new System.Drawing.Size(96, 96);
             this.JacketBox.TabStop = false;
             this.JacketBox.Paint += new System.Windows.Forms.PaintEventHandler(this.OnJacketBoxPaint);
             this.JacketBox.Click += new System.EventHandler(this.OnJacketPictureBoxClick);
-            //
-            // ChipsLabel
-            //
-            this.ChipsLabel.BackColor = VoxCharger.Theme.Card;
-            this.ChipsLabel.Name = "ChipsLabel";
-            this.ChipsLabel.Paint += new System.Windows.Forms.PaintEventHandler(this.OnChipsLabelPaint);
             //
             // TitleLabel
             //
@@ -341,15 +337,17 @@
             this.BackgroundTile.Name = "BackgroundTile";
             this.DateTile.Caption = "RELEASED";
             this.DateTile.Name = "DateTile";
-            //
-            // FilesLabel
-            //
-            this.FilesLabel.AutoEllipsis = true;
-            this.FilesLabel.BackColor = VoxCharger.Theme.Card;
-            this.FilesLabel.Font = VoxCharger.Theme.Small;
-            this.FilesLabel.ForeColor = VoxCharger.Theme.TextDim;
-            this.FilesLabel.Name = "FilesLabel";
-            this.FilesLabel.UseMnemonic = false;
+            this.VersionTile.Caption = "VERSION";
+            this.VersionTile.Name = "VersionTile";
+            this.VersionTile.ValueFont = VoxCharger.Theme.Subtitle;
+            this.TagTile.Caption = "TAG";
+            this.TagTile.Name = "TagTile";
+            this.MusicTile.Caption = "MUSIC";
+            this.MusicTile.Name = "MusicTile";
+            this.MusicTile.ValueFont = VoxCharger.Theme.MonoFile;
+            this.PreviewTile.Caption = "PREVIEW";
+            this.PreviewTile.Name = "PreviewTile";
+            this.PreviewTile.ValueFont = VoxCharger.Theme.MonoFile;
             //
             // ChartsCard
             //
@@ -455,7 +453,6 @@
         private VoxCharger.FlatButton GamePathButton;
         private VoxCharger.CardPanel MetadataCard;
         private System.Windows.Forms.PictureBox JacketBox;
-        private System.Windows.Forms.Label ChipsLabel;
         private System.Windows.Forms.Label TitleLabel;
         private System.Windows.Forms.Label ArtistLabel;
         private VoxCharger.FlatButton ExplorerButton;
@@ -464,7 +461,10 @@
         private VoxCharger.StatTile VolumeTile;
         private VoxCharger.StatTile BackgroundTile;
         private VoxCharger.StatTile DateTile;
-        private System.Windows.Forms.Label FilesLabel;
+        private VoxCharger.StatTile VersionTile;
+        private VoxCharger.StatTile TagTile;
+        private VoxCharger.StatTile MusicTile;
+        private VoxCharger.StatTile PreviewTile;
         private VoxCharger.CardPanel ChartsCard;
         private System.Windows.Forms.Label ChartsTitleLabel;
         private System.Windows.Forms.Label ChartsSubLabel;

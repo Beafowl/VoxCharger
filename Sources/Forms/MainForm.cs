@@ -171,20 +171,25 @@ namespace VoxCharger
             EmptyContentLabel.SetBounds(24, 0, cw, ch);
             GamePathButton.Location = new Point((ContentPanel.ClientSize.Width - GamePathButton.Width) / 2, ch / 2 + 24);
 
-            MetadataCard.SetBounds(24, 20, cw, 252);
+            // Metadata: jacket and names, then one row of values and one row of files
+            const int gap = 10;
+            MetadataCard.SetBounds(24, 20, cw, 20 + 96 + 20 + 62 + gap + 62 + 20);
             JacketBox.Location = new Point(20, 20);
-            EditMetadataButton.Location = new Point(cw - 20 - EditMetadataButton.Width, 46);
-            ExplorerButton.Location = new Point(EditMetadataButton.Left - 8 - ExplorerButton.Width, 46);
-            int textLeft = JacketBox.Right + 18;
-            ChipsLabel.SetBounds(textLeft, 22, ExplorerButton.Left - 16 - textLeft, 20);
-            TitleLabel.SetBounds(textLeft - 3, 44, ExplorerButton.Left - 12 - textLeft, 36);
-            ArtistLabel.SetBounds(textLeft, 82, ExplorerButton.Left - 12 - textLeft, 22);
+            EditMetadataButton.Location = new Point(cw - 20 - EditMetadataButton.Width, 50);
+            ExplorerButton.Location = new Point(EditMetadataButton.Left - 8 - ExplorerButton.Width, 50);
+            int textLeft = JacketBox.Right + 20;
+            TitleLabel.SetBounds(textLeft - 3, 34, ExplorerButton.Left - 16 - textLeft, 36);
+            ArtistLabel.SetBounds(textLeft, 72, ExplorerButton.Left - 16 - textLeft, 24);
 
-            int tileW = (cw - 40 - 30) / 4;
-            var stats = new[] { BpmTile, VolumeTile, BackgroundTile, DateTile };
+            int rowY  = JacketBox.Bottom + 20;
+            var stats = new[] { BpmTile, VolumeTile, DateTile, BackgroundTile, VersionTile, TagTile };
+            int tileW = (cw - 40 - gap * (stats.Length - 1)) / stats.Length;
             for (int i = 0; i < stats.Length; i++)
-                stats[i].SetBounds(20 + i * (tileW + 10), 128, tileW, 62);
-            FilesLabel.SetBounds(20, 204, cw - 40, 30);
+                stats[i].SetBounds(20 + i * (tileW + gap), rowY, tileW, 62);
+
+            int fileW = (cw - 40 - gap) / 2;
+            MusicTile.SetBounds(20, rowY + 62 + gap, fileW, 62);
+            PreviewTile.SetBounds(20 + fileW + gap, rowY + 62 + gap, cw - 40 - fileW - gap, 62);
 
             ChartsCard.SetBounds(24, MetadataCard.Bottom + 16, cw, 72 + 88 + 12 + 88 + 20);
             ReconvertButton.Location = new Point(cw - 20 - ReconvertButton.Width, 18);
@@ -231,36 +236,6 @@ namespace VoxCharger
                 JacketCache.DrawImage(g, _songJacket, rect, 10);
             else
                 JacketCache.DrawPlaceholder(g, rect, VoxHeader.WithDecodedSymbols(header?.Title), 10, new Font("Segoe UI", 24f, FontStyle.Bold));
-        }
-
-        // Chips above the title: music id, the mix the song is in, the tag
-        private void OnChipsLabelPaint(object sender, PaintEventArgs e)
-        {
-            var g = e.Graphics;
-            g.Clear(Theme.Card);
-            Theme.Smooth(g);
-            if (!(MusicListBox.SelectedItem is VoxHeader header))
-                return;
-
-            var chips = new List<(string text, bool accent, bool mono)> { ($"ID {header.Id}", false, true) };
-            string mix = Original ? "original" : AssetManager.MixName;
-            if (!string.IsNullOrEmpty(mix))
-                chips.Add((mix, true, false));
-
-            int tag = AssetManager.MixTagId > 0 ? AssetManager.MixTagId : header.TagId;
-            if (tag > 0)
-                chips.Add(($"tag {tag}", true, false));
-
-            int x = 0;
-            foreach (var chip in chips)
-            {
-                var font = chip.mono ? Theme.Mono : Theme.Small;
-                int width = TextRenderer.MeasureText(g, chip.text, font, Size.Empty, TextFormatFlags.NoPadding).Width + 16;
-                var rect = new Rectangle(x, 0, width, 20);
-                Theme.FillRounded(g, chip.accent ? Theme.AccentSoft : Theme.Border, rect, 10);
-                Theme.DrawText(g, chip.text, font, chip.accent ? Theme.AccentText : Theme.TextSoft, rect, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-                x += width + 8;
-            }
         }
         #endregion
 
@@ -340,8 +315,8 @@ namespace VoxCharger
                 menu.Show(button, new Point(0, button.Height + 4), ToolStripDropDownDirection.BelowRight);
         }
 
-        private void OnSongsButtonClick(object sender, EventArgs e)   => ShowMenu(_songsMenu, SongsButton, true);
-        private void OnMixMenuButtonClick(object sender, EventArgs e) => ShowMenu(_mixMenu, MixMenuButton, true);
+        private void OnSongsButtonClick(object sender, EventArgs e)   => ShowMenu(_songsMenu, SongsButton, false);
+        private void OnMixMenuButtonClick(object sender, EventArgs e) => ShowMenu(_mixMenu, MixMenuButton, false);
         private void OnToolsButtonClick(object sender, EventArgs e)   => ShowMenu(_toolsMenu, ToolsButton, false, true);
         private void OnSortButtonClick(object sender, EventArgs e)    => ShowMenu(_sortMenu, SortButton, false, true);
 
@@ -1617,10 +1592,10 @@ namespace VoxCharger
                 return;
             }
 
-            _songJacket = JacketCache.Get(JacketCache.SongJacketFile(header), 88);
+            _songJacket = JacketCache.Get(JacketCache.SongJacketFile(header), 96);
             var firstLevel = header.Levels.Keys.OrderBy(d => d).Select(d => header.Levels[d]).FirstOrDefault(l => l.Jacket != null);
             if (firstLevel != null && !_pristine)
-                _songJacket = JacketCache.Scale(firstLevel.Jacket, 88);
+                _songJacket = JacketCache.Scale(firstLevel.Jacket, 96);
 
             TitleLabel.Text  = VoxHeader.WithDecodedSymbols(header.Title);
             ArtistLabel.Text = VoxHeader.WithDecodedSymbols(header.Artist);
@@ -1630,7 +1605,11 @@ namespace VoxCharger
             BackgroundTile.Value = $"{header.BackgroundId:D2}";
             DateTile.Value       = header.DistributionDate.ToString("yyyy-MM-dd");
 
-            FilesLabel.Text = $"Version  {VersionName(header.Version)}      Music  {AudioFile(header, false)}      Preview  {AudioFile(header, true)}";
+            int tag = AssetManager.MixTagId > 0 ? AssetManager.MixTagId : header.TagId;
+            VersionTile.Value = VersionName(header.Version);
+            TagTile.Value     = tag > 0 ? tag.ToString() : "none";
+            MusicTile.Value   = AudioFile(header, false);
+            PreviewTile.Value = AudioFile(header, true);
 
             EditMetadataButton.Enabled = CanEdit;
             ExplorerButton.Enabled     = Directory.Exists(AssetManager.GetMusicPath(header));
@@ -1642,7 +1621,6 @@ namespace VoxCharger
 
             RefreshReconvertControls();
             JacketBox.Invalidate();
-            ChipsLabel.Invalidate();
         }
 
         // Jacket of one chart: a picked but unsaved image first, then the file in the music folder

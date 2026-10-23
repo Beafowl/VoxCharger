@@ -44,6 +44,7 @@ namespace VoxCharger
         public static readonly Font Badge     = new Font("Segoe UI Semibold", 8.25f);
         public static readonly Font Mono      = new Font("Consolas", 8.25f);
         public static readonly Font MonoLarge = new Font("Consolas", 11.25f);
+        public static readonly Font MonoFile  = new Font("Consolas", 9.75f);
         public static readonly Font Title     = new Font("Segoe UI", 17f, FontStyle.Bold);
         public static readonly Font Subtitle  = new Font("Segoe UI", 10.5f);
         public static readonly Font CardTitle = new Font("Segoe UI", 11f, FontStyle.Bold);
@@ -692,6 +693,7 @@ namespace VoxCharger
 
         public string Caption { get => _caption; set { _caption = value; Invalidate(); } }
         public string Value   { get => _value;   set { _value = value; Invalidate(); } }
+        public Font ValueFont { get; set; } = Theme.MonoLarge;
 
         public StatTile()
         {
@@ -706,7 +708,7 @@ namespace VoxCharger
             base.OnPaint(e);
             var g = e.Graphics;
             Theme.DrawText(g, _caption, Theme.Caption, Theme.TextDim, new Rectangle(14, 10, Width - 20, 16), TextFormatFlags.Left);
-            Theme.DrawText(g, _value, Theme.MonoLarge, Theme.Text, new Rectangle(13, 30, Width - 20, 22), TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            Theme.DrawText(g, _value, ValueFont, Theme.Text, new Rectangle(13, 30, Width - 22, 22), TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
     }
 
