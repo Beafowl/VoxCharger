@@ -124,6 +124,7 @@ namespace VoxCharger
         // Bulk import: folder each imported song came from, and songs skipped because the mix already had them
         public Dictionary<VoxHeader, string> SourceFolders { get; private set; } = new Dictionary<VoxHeader, string>();
         public int SkippedCount { get; private set; }
+        public TimeSpan Elapsed { get; private set; }                  // time the bulk conversion took
 
         public ConverterForm(string path, ConvertMode convert)
         {
@@ -658,6 +659,7 @@ namespace VoxCharger
             };
 
             KshBulkImporter.Result result = null;
+            var watch = Stopwatch.StartNew();
             using (var loader = new LoadingForm())
             {
                 loader.SetAction(dialog =>
@@ -681,6 +683,7 @@ namespace VoxCharger
 
                 loader.ShowDialog();
             }
+            Elapsed = watch.Elapsed;
 
             var errors = result?.Errors ?? new List<string> { "Bulk import failed" };
             if (errors.Count != 0)

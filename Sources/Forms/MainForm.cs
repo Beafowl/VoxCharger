@@ -931,13 +931,14 @@ namespace VoxCharger
                         AssetManager.Headers.Add(header);
 
                     // Bulk import already wrote the assets, save so the db matches what's on disk
+                    var watch = Stopwatch.StartNew();
                     ApplyCurrentSort();
                     if (converter.ResultSet.Length > 0)
                         Save(AssetManager.MdbFilename);
 
                     string skipped = converter.SkippedCount > 0 ? $", {converter.SkippedCount} skipped (already in this mix)" : string.Empty;
                     MessageBox.Show(
-                        $"{converter.ResultSet.Length} song(s) imported{skipped}.",
+                        $"{converter.ResultSet.Length} song(s) imported{skipped} in {FormatDuration(converter.Elapsed + watch.Elapsed)}.",
                         "Bulk Import",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information
@@ -1051,6 +1052,8 @@ namespace VoxCharger
             var asciiToUrl = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var errors    = new List<string>();
 
+            // Downloads, conversion and save; the confirmation form in between doesn't count
+            var watch = Stopwatch.StartNew();
             using (var loader = new LoadingForm())
             {
                 loader.SetAction(dialog =>
@@ -1112,21 +1115,25 @@ namespace VoxCharger
                 });
                 loader.ShowDialog();
             }
+            var downloadTime = watch.Elapsed;
 
             if (asciiToUrl.Count == 0)
             {
                 try { Directory.Delete(parentDir, true); } catch { }
-                ShowImportSummary("Import Mix", 0, errors);
+                ShowImportSummary("Import Mix", 0, errors, downloadTime);
                 return;
             }
 
             int imported = 0;
+            TimeSpan elapsed;
             try
             {
                 using (var converter = new ConverterForm(parentDir, ConvertMode.BulkImporter))
                 {
                     if (converter.ShowDialog() != DialogResult.OK)
                         return;
+
+                    watch.Restart();
 
                     foreach (var header in converter.ResultSet)
                     {
@@ -1147,9 +1154,11 @@ namespace VoxCharger
                     ApplyCurrentSort();
                     if (imported > 0)
                         Save(AssetManager.MdbFilename);
+
+                    elapsed = downloadTime + converter.Elapsed + watch.Elapsed;
                 }
 
-                ShowImportSummary("Import Mix", imported, errors);
+                ShowImportSummary("Import Mix", imported, errors, elapsed);
             }
             finally
             {
@@ -1234,6 +1243,7 @@ namespace VoxCharger
             if (confirm != DialogResult.Yes) return;
 
             AsphyxiaImporter.Result result = null;
+            var watch = Stopwatch.StartNew();
             using (var loader = new LoadingForm())
             {
                 loader.SetAction(dialog =>
@@ -1257,7 +1267,7 @@ namespace VoxCharger
 
             if (result == null || result.Imported == 0)
             {
-                ShowImportSummary("Import Asphyxia list", 0, result?.Errors ?? new List<string>());
+                ShowImportSummary("Import Asphyxia list", 0, result?.Errors ?? new List<string>(), watch.Elapsed);
                 return;
             }
 
@@ -1281,7 +1291,7 @@ namespace VoxCharger
             _pristine = true;
             UpdateUi();
 
-            ShowImportSummary("Import Asphyxia list", result.Imported, result.Errors);
+            ShowImportSummary("Import Asphyxia list", result.Imported, result.Errors, watch.Elapsed);
             WarnJacketLimit();
         }
 
@@ -1461,23 +1471,37 @@ namespace VoxCharger
             }
         }
 
-        private void ShowImportSummary(string title, int succeeded, List<string> errors)
+        private void ShowImportSummary(string title, int succeeded, List<string> errors, TimeSpan elapsed)
         {
             if (errors.Count == 0)
             {
                 MessageBox.Show(
-                    $"Done. {succeeded} chart(s) imported.",
+                    $"Done. {succeeded} chart(s) imported in {FormatDuration(elapsed)}.",
                     title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information
                 );
                 return;
             }
-            string msg = $"Done. {succeeded} chart(s) imported, {errors.Count} failed:\n";
+            string msg = $"Done. {succeeded} chart(s) imported, {errors.Count} failed, in {FormatDuration(elapsed)}:\n";
             int shown = Math.Min(errors.Count, 10);
             for (int i = 0; i < shown; i++) msg += "\n- " + errors[i];
             if (errors.Count > shown) msg += $"\n... and {errors.Count - shown} more.";
             MessageBox.Show(msg, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        // "8.4 s", "3 min 05 s", "1 h 02 min"
+        private static string FormatDuration(TimeSpan time)
+        {
+            if (time.TotalSeconds < 59.95)
+                return $"{time.TotalSeconds:0.0} s";
+
+            int seconds = (int)Math.Round(time.TotalSeconds);
+            if (seconds < 3600)
+                return $"{seconds / 60} min {seconds % 60:00} s";
+
+            int minutes = (int)Math.Round(time.TotalMinutes);
+            return $"{minutes / 60} h {minutes % 60:00} min";
         }
 
         private static string MakeSafeFolderName(string raw)
