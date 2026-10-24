@@ -130,9 +130,11 @@ namespace VoxCharger
         {
             var songs = new List<Song>();
 
-            // The same song (title and artist) in another folder: a difficulty kept in a sub folder of
-            // the song, or a pack shipped twice. Its charts fill in difficulties the first one lacks.
-            var byKey = new Dictionary<string, Song>(StringComparer.OrdinalIgnoreCase);
+            // The same song in another folder: a pack shipped twice, or a difficulty kept in a sub folder
+            // of the song. Its charts are added to the first one when they don't conflict with it, see
+            // TryMerge. Different charts of the same song (another charter's take) stay a song of their own.
+            var byKey  = new Dictionary<string, List<Song>>(StringComparer.OrdinalIgnoreCase);
+            var prints = new Dictionary<Song, Dictionary<string, HashSet<string>>>();
             foreach (string folder in FindSongFolders(root))
             {
                 // One song per distinct title (same comparison as Exporter.GetCharts),
@@ -143,20 +145,21 @@ namespace VoxCharger
                     try
                     {
                         ReadTitleArtist(file, out string title, out string artist);
-                        if (!seen.Add(Ksh.Exporter.NormalizeTitle(title)))
+                        string normalized = Ksh.Exporter.NormalizeTitle(title);
+                        if (!seen.Add(normalized))
                             continue;
 
                         // A sub folder of a song only needs the same title, its charts often name another artist
-                        string key = SongKey(Ksh.Exporter.NormalizeTitle(title), artist);
-                        if (byKey.TryGetValue(key, out var first) || (first = songs.LastOrDefault(s => IsSubFolder(folder, s.Folder) &&
-                                Ksh.Exporter.NormalizeTitle(s.Title) == Ksh.Exporter.NormalizeTitle(title))) != null)
-                        {
-                            first.MoreFolders.Add(folder);
+                        string key  = SongKey(normalized, artist);
+                        var parent  = songs.LastOrDefault(s => IsSubFolder(folder, s.Folder) && Ksh.Exporter.NormalizeTitle(s.Title) == normalized);
+                        var matches = byKey.TryGetValue(key, out var list) ? list : new List<Song>();
+                        if ((parent != null && TryMerge(parent, folder, true, prints)) || matches.Any(s => TryMerge(s, folder, false, prints)))
                             continue;
-                        }
 
                         var song = new Song { Folder = folder, MainFile = file, Title = title, Artist = artist };
-                        byKey[key] = song;
+                        if (list == null)
+                            byKey[key] = list = new List<Song>();
+                        list.Add(song);
                         songs.Add(song);
                     }
                     catch (Exception ex)
@@ -167,6 +170,99 @@ namespace VoxCharger
             }
 
             return songs;
+        }
+
+        // Adds `folder` to `song` when every chart of it is a copy of one the song has, or a difficulty the
+        // song lacks. A folder elsewhere in the pack also needs at least one chart in common, so two
+        // charters' takes on a song that happen to cover different difficulties aren't mixed.
+        private static bool TryMerge(Song song, string folder, bool subFolder, Dictionary<Song, Dictionary<string, HashSet<string>>> prints)
+        {
+            if (!prints.TryGetValue(song, out var mine))
+            {
+                prints[song] = mine = ChartPrints(song.Folder, song.Title);
+                foreach (string more in song.MoreFolders)
+                    AddPrints(mine, ChartPrints(more, song.Title));
+            }
+
+            var other  = ChartPrints(folder, song.Title);
+            bool shared = false;
+            foreach (var chart in other)
+            {
+                if (!mine.TryGetValue(chart.Key, out var existing))
+                    continue;
+                if (!chart.Value.IsSubsetOf(existing))
+                    return false;
+                shared = true;
+            }
+
+            if (!shared && !subFolder)
+                return false;
+
+            song.MoreFolders.Add(folder);
+            AddPrints(mine, other);
+            return true;
+        }
+
+        private static void AddPrints(Dictionary<string, HashSet<string>> target, Dictionary<string, HashSet<string>> source)
+        {
+            foreach (var chart in source)
+            {
+                if (target.TryGetValue(chart.Key, out var set))
+                    set.UnionWith(chart.Value);
+                else
+                    target[chart.Key] = new HashSet<string>(chart.Value);
+            }
+        }
+
+        // Difficulty -> hashes of the note data (everything after the header) of the charts of a title in
+        // a folder. The header is left out: copies of a pack often point at the music with other paths.
+        private static Dictionary<string, HashSet<string>> ChartPrints(string folder, string title)
+        {
+            var prints = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            string normalized = Ksh.Exporter.NormalizeTitle(title);
+            foreach (string file in Directory.GetFiles(folder, "*.ksh"))
+            {
+                string chartTitle = null, difficulty = "infinite";
+                var body = new StringBuilder();
+                bool inBody = false;
+                foreach (string line in File.ReadLines(file, KshEncoding))
+                {
+                    if (inBody)
+                    {
+                        body.Append(line.TrimEnd()).Append('\n');
+                        continue;
+                    }
+
+                    if (line.Trim() == "--")
+                    {
+                        inBody = true;
+                        continue;
+                    }
+
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0)
+                        continue;
+
+                    switch (line.Substring(0, eq).Trim().ToLowerInvariant())
+                    {
+                        case "title":      chartTitle = line.Substring(eq + 1).Trim(); break;
+                        case "difficulty": difficulty = line.Substring(eq + 1).Trim(); break;
+                    }
+                }
+
+                if (Ksh.Exporter.NormalizeTitle(chartTitle) != normalized)
+                    continue;
+
+                string hash;
+                using (var md5 = System.Security.Cryptography.MD5.Create())
+                    hash = Convert.ToBase64String(md5.ComputeHash(Encoding.UTF8.GetBytes(body.ToString())));
+
+                if (!prints.TryGetValue(difficulty, out var set))
+                    prints[difficulty] = set = new HashSet<string>();
+                set.Add(hash);
+            }
+
+            return prints;
         }
 
         private static bool IsSubFolder(string folder, string parent)
