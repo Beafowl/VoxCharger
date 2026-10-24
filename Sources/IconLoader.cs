@@ -2,27 +2,23 @@
 using System.Drawing;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace VoxCharger
 {
-    // Two-icon scheme:
-    //   * icon.ico      — the white logo (16 to 256 px). The app's windows are
-    //                     always dark, so their title bar and taskbar icon is
-    //                     this one; it is also the exe's icon.
-    //   * icon_dark.ico — the black logo, for light backgrounds.
+    // Three icons, all in Resources/:
+    //   * icon.ico      — the white logo (16 to 256 px), for the app's windows, which are always dark.
+    //   * icon_dark.ico — the same logo in black, for the taskbar in Windows' light mode.
+    //   * icon_app.ico  — the white logo with a thin dark outline: the exe's icon (Explorer, shortcuts,
+    //                     pinned taskbar buttons), which can't follow the theme, so it has to read on both.
     //
-    // Both .ico files live in Resources/ and are embedded as assembly
-    // resources (see csproj). This loader pulls them out by name and adds a
-    // tiny registry probe for the current Windows app theme so the form's
-    // titlebar / taskbar icon stays legible regardless of theme. The .exe's
-    // Win32 ApplicationIcon (Explorer / alt-tab when not running) is still a
-    // single static icon — that's a build-time concept and can't be theme-
-    // switched dynamically.
+    // icon.ico and icon_dark.ico are embedded as assembly resources (see csproj) and loaded by name.
     internal static class IconLoader
     {
         // Resource name pattern matches MSBuild's default for EmbeddedResource:
         //   <RootNamespace>.<RelativePath with '/' replaced by '.'>
-        // RootNamespace is "VoxCharger" per the csproj.
         private const string DarkResource  = "VoxCharger.Resources.icon_dark.ico";
         private const string LightResource = "VoxCharger.Resources.icon.ico";
 
@@ -32,36 +28,68 @@ namespace VoxCharger
         // The windows use a dark theme regardless of the Windows setting
         public static Icon ForDarkUi() => Light();
 
-        // True when Windows is configured to render apps with a light theme
-        // (taskbar, titlebar, app chrome). False = dark theme. Defaults to
-        // light if the registry key is missing or unreadable, since light is
-        // the Windows default and matches what most cabinets/dev machines
-        // use.
-        public static bool IsAppsLightTheme()
+        // True when the taskbar (and Alt+Tab) are light: the "Windows mode" setting. Light when the
+        // registry value is missing, that is the Windows default.
+        public static bool IsTaskbarLight()
         {
             try
             {
-                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                    @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
                 {
-                    if (key == null) return true;
-                    var v = key.GetValue("AppsUseLightTheme");
-                    if (v is int iv) return iv != 0;
+                    if (key?.GetValue("SystemUsesLightTheme") is int value)
+                        return value != 0;
                 }
             }
-            catch { /* fall through to default */ }
+            catch
+            {
+                // fall through to the default
+            }
+
             return true;
         }
 
-        // Pick the icon that matches the current Windows app theme. Use this
-        // for Form.Icon so the icon stays legible against the OS chrome.
-        // icon.ico is the variant authored for light theme (dark-coloured
-        // glyph on a light surface); icon_dark.ico is the variant authored
-        // for dark theme (light-coloured glyph on a dark surface). The
-        // earlier mapping was inverted — fixed below.
-        public static Icon ForCurrentTheme()
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        private const int WM_SETICON = 0x0080;
+        private const int ICON_BIG   = 1;
+
+        // White logo in the (dark) title bar; the taskbar and Alt+Tab icon follows Windows' light or dark
+        // mode, also when it changes while the window is open
+        public static void ApplyTo(Form form)
         {
-            return IsAppsLightTheme() ? Light() : Dark();
+            var white = Light();
+            var black = Dark();
+            if (white == null)
+                return;
+
+            form.Icon = white;
+
+            void UpdateBig()
+            {
+                if (!form.IsHandleCreated)
+                    return;
+
+                var big = IsTaskbarLight() && black != null ? black : white;
+                SendMessage(form.Handle, WM_SETICON, (IntPtr)ICON_BIG, big.Handle);
+            }
+
+            UserPreferenceChangedEventHandler changed = (s, e) =>
+            {
+                if (e.Category == UserPreferenceCategory.General && form.IsHandleCreated)
+                    form.BeginInvoke(new Action(UpdateBig));
+            };
+
+            // SystemEvents is static: unsubscribe with the window, or it keeps the form alive
+            form.HandleCreated += (s, e) => UpdateBig();
+            SystemEvents.UserPreferenceChanged += changed;
+            form.FormClosed += (s, e) =>
+            {
+                SystemEvents.UserPreferenceChanged -= changed;
+                black?.Dispose();
+            };
+
+            UpdateBig();
         }
 
         private static Icon LoadEmbedded(string resourceName)

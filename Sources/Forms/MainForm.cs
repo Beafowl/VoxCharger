@@ -68,8 +68,7 @@ namespace VoxCharger
         {
             InitializeComponent();
 
-            var icon = IconLoader.ForDarkUi();
-            if (icon != null) Icon = icon;
+            IconLoader.ApplyTo(this);
 
             BuildMenus();
             foreach (var tile in Tiles)
