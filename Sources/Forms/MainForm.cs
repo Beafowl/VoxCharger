@@ -43,6 +43,7 @@ namespace VoxCharger
         private ToolStripMenuItem _deleteSongItem;
         private ToolStripMenuItem _mixTagItem;
         private ToolStripMenuItem _startIdItem;
+        private ToolStripMenuItem _renumberItem;
         private ToolStripMenuItem _reconvertItem;
         private ToolStripMenuItem _removeSongItem;
         private ToolStripSeparator _listSeparator;
@@ -263,12 +264,14 @@ namespace VoxCharger
 
             _mixTagItem  = DarkMenuRenderer.Item("Set mix tag…", OnMixTagFileMenuClick, "");
             _startIdItem = DarkMenuRenderer.Item("Set starting ID…", OnMixStartIdFileMenuClick, "");
+            _renumberItem = DarkMenuRenderer.Item("Renumber mixes…", OnRenumberMixesMenuClick);
             _gameFolderItem = DarkMenuRenderer.Item("Change game folder…", OnGamePathButtonClick, "");
-            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem, new ToolStripSeparator(), _gameFolderItem });
+            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem, _renumberItem, new ToolStripSeparator(), _gameFolderItem });
             _toolsMenu.Opening += (s, e) =>
             {
                 _mixTagItem.Enabled  = CanEdit;
                 _startIdItem.Enabled = CanEdit;
+                _renumberItem.Enabled = AssetManager.GetMixes().Length > 0;
                 _gameFolderItem.ShortcutKeyDisplayString = ShortPath(AssetManager.GamePath);
                 _mixTagItem.ShortcutKeyDisplayString  = AssetManager.MixTagId > 0 ? AssetManager.MixTagId.ToString() : "none";
                 _startIdItem.ShortcutKeyDisplayString = AssetManager.MixStartId > 0 ? AssetManager.MixStartId.ToString() : "none";
@@ -655,6 +658,109 @@ namespace VoxCharger
 
                 MessageBox.Show(summary, "Starting ID", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
+        }
+
+        // Consecutive music ids over several mixes, see AssetManager.PlanRenumberMixes. Unlike the other
+        // tools it renames the files and saves every mix right away: it works on mixes that aren't open.
+        private void OnRenumberMixesMenuClick(object sender, EventArgs e)
+        {
+            if (!ConfirmUnsaved("Renumber mixes"))
+                return;
+
+            IList<string> mixes;
+            int startId;
+            var preselected = CanEdit ? new[] { _view } : AssetManager.GetMixes();
+            using (var form = new RenumberMixesForm(AssetManager.GetMixes(), preselected))
+            {
+                if (form.ShowDialog(this) != DialogResult.OK)
+                    return;
+
+                mixes   = form.Mixes;
+                startId = form.StartId;
+            }
+
+            var plan  = AssetManager.PlanRenumberMixes(mixes, startId);
+            var ids   = plan.Values.SelectMany(m => m.Values).ToList();
+            int moved = plan.Values.Sum(m => m.Count(pair => pair.Key != pair.Value));
+            if (moved == 0)
+            {
+                MessageBox.Show(
+                    ids.Count == 0 ? "The selected mixes have no songs." : $"The songs already have the IDs {ids.Min()}–{ids.Max()}, nothing to change.",
+                    "Renumber mixes",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+
+            if (ids.Max() > AssetManager.MaxJacketMusicId)
+            {
+                var limit = MessageBox.Show(
+                    $"The game shows no jacket at song select for IDs above {AssetManager.MaxJacketMusicId} (its jacket loader stops at the tutorial ID 9001); the songs still play.\n\n" +
+                    $"Numbering from {startId} puts songs up to {ids.Max()}. Continue anyway?",
+                    "Renumber mixes",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning
+                );
+
+                if (limit != DialogResult.Yes)
+                    return;
+            }
+
+            var confirm = MessageBox.Show(
+                $"{moved} of {ids.Count} song(s) in {mixes.Count} mix(es) get a new ID, the mixes then use {ids.Min()}–{ids.Max()}.\n\n" +
+                "Their files are renamed and the mixes saved right away. Continue?",
+                "Renumber mixes",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question
+            );
+
+            if (confirm != DialogResult.Yes)
+                return;
+
+            List<string> errors = null;
+            var watch = Stopwatch.StartNew();
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog => new Thread(() =>
+                {
+                    try
+                    {
+                        errors = AssetManager.RenumberMixes(plan, (status, percent) =>
+                        {
+                            dialog.SetStatus(status);
+                            dialog.SetProgress(percent);
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        errors = new List<string> { ex.Message };
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                }).Start());
+
+                loader.ShowDialog(this);
+            }
+
+            // Every mix was loaded in turn; show the one that was open again
+            SelectView(_view ?? ViewOriginal, false);
+
+            string ranges = string.Join("\n", plan.Where(m => m.Value.Count > 0).Select(m => $"{m.Key}: {m.Value.Values.Min()}–{m.Value.Values.Max()}"));
+            if (errors == null || errors.Count == 0)
+            {
+                MessageBox.Show($"Renumbered {moved} song(s) in {FormatDuration(watch.Elapsed)}.\n\n{ranges}", "Renumber mixes", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string message = $"{errors.Count} song(s) could not be renumbered and keep their ID:\n";
+            foreach (string error in errors.Take(15))
+                message += $"\n- {error}";
+            if (errors.Count > 15)
+                message += $"\n... and {errors.Count - 15} more.";
+            MessageBox.Show(message + $"\n\n{ranges}", "Renumber mixes", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private void QueueAction(string key, Action action)

@@ -294,6 +294,113 @@ namespace VoxCharger
             return actions;
         }
 
+        // Consecutive ids from startId over several mixes: one mix after the other in the given order,
+        // the songs of a mix in their current id order. Ids of the game, the mixes not in the list and
+        // the tutorial are skipped, so the mixes fill every free id from startId on.
+        // Returns mix -> (old id -> new id) for every song.
+        public static Dictionary<string, Dictionary<int, int>> PlanRenumberMixes(IList<string> mixes, int startId)
+        {
+            var blocked = new HashSet<int>(MusicIdsIn(Path.Combine(GamePath, @"data\others\music_db.xml"))) { TutorialMusicId };
+            foreach (string modDir in Directory.GetDirectories(Path.Combine(GamePath, @"data_mods\")))
+            {
+                string name = new DirectoryInfo(modDir).Name;
+                if (name != "_cache" && !mixes.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    blocked.UnionWith(MusicIdsIn(Path.Combine(modDir, @"others\music_db.merged.xml")));
+            }
+
+            var plan = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
+            int next = startId;
+            foreach (string mix in mixes)
+            {
+                var ids = new Dictionary<int, int>();
+                foreach (int id in MusicIdsIn(MixDbFilename(mix)).Distinct().OrderBy(id => id))
+                {
+                    while (blocked.Contains(next))
+                        next++;
+
+                    ids[id] = next++;
+                }
+
+                plan[mix] = ids;
+            }
+
+            return plan;
+        }
+
+        // Applies PlanRenumberMixes right away: loads each mix in turn, renames the files of the songs
+        // that move and saves its db. A song whose files can't be moved keeps its id, the error says
+        // why. The mix loaded last stays loaded, the caller reopens the one it shows.
+        public static List<string> RenumberMixes(Dictionary<string, Dictionary<int, int>> plan, Action<string, float> progress)
+        {
+            var errors = new List<string>();
+            int total  = plan.Values.Sum(ids => ids.Count(pair => pair.Key != pair.Value));
+            int done   = 0;
+
+            foreach (var mix in plan)
+            {
+                LoadMix(mix.Key);
+
+                var pending = Headers
+                    .Where(h => mix.Value.TryGetValue(h.Id, out int id) && id != h.Id)
+                    .Select(h => (header: h, newId: mix.Value[h.Id]))
+                    .ToList();
+
+                // A song moves once no other song of the mix holds its new id; the new ids are distinct and
+                // follow the old order, so only a song that failed to move can block another one
+                while (pending.Count > 0)
+                {
+                    int index = pending.FindIndex(m => !Headers.Contains(m.newId));
+                    if (index < 0)
+                    {
+                        errors.AddRange(pending.Select(m => $"{mix.Key}: {m.header.Id} ({m.header.Title}) can't move to {m.newId}, that id is still taken"));
+                        break;
+                    }
+
+                    var (header, newId) = pending[index];
+                    pending.RemoveAt(index);
+                    progress?.Invoke($"{mix.Key}: {header.Id} -> {newId}", total == 0 ? 100f : ++done * 100f / total);
+
+                    try
+                    {
+                        RenameMusicAssets(header.Id, newId, header.Ascii);
+                        Headers.ChangeId(header, newId);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"{mix.Key}: {header.Id} ({header.Title}): {ex.Message}");
+                    }
+                }
+
+                // A starting id below the new numbers would put new songs into gaps further down
+                if (MixStartId > 0 && Headers.Count > 0)
+                    MixStartId = Headers.Min(h => h.Id);
+
+                Headers.Save(MdbFilename);
+                SaveMixSettings();
+            }
+
+            return errors;
+        }
+
+        // Music ids in a music db file, without loading the whole db
+        public static List<int> MusicIdsIn(string dbFilename)
+        {
+            var ids = new List<int>();
+            if (!File.Exists(dbFilename))
+                return ids;
+
+            string text = File.ReadAllText(dbFilename, Encoding.GetEncoding("Shift_JIS"));
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(text, @"<music\s+id=""(\d+)"""))
+                ids.Add(int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture));
+
+            return ids;
+        }
+
+        public static string MixDbFilename(string mixName)
+        {
+            return Path.Combine(GamePath, "data_mods", mixName, @"others\music_db.merged.xml");
+        }
+
         public static void SetMixTagId(int tagId)
         {
             // Songs that only carry the tag because of the previous mix tag lose it when the mix tag is removed
