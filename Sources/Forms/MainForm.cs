@@ -39,6 +39,7 @@ namespace VoxCharger
         private readonly ContextMenuStrip _listMenu  = DarkMenuRenderer.CreateMenu();
 
         private ToolStripMenuItem _deleteMixItem;
+        private ToolStripMenuItem _disableMixItem;
         private ToolStripMenuItem _gameFolderItem;
         private ToolStripMenuItem _deleteSongItem;
         private ToolStripMenuItem _mixTagItem;
@@ -260,7 +261,8 @@ namespace VoxCharger
 
             _deleteMixItem = DarkMenuRenderer.Item("Delete", OnDeleteMixFileMenuClick);
             _deleteMixItem.Tag = "danger";
-            _mixMenu.Items.AddRange(new ToolStripItem[] { DarkMenuRenderer.Item("Create…", OnNewFileMenuClick), _deleteMixItem });
+            _disableMixItem = DarkMenuRenderer.Item("Disable", OnDisableMixMenuClick);
+            _mixMenu.Items.AddRange(new ToolStripItem[] { DarkMenuRenderer.Item("Create…", OnNewFileMenuClick), _disableMixItem, _deleteMixItem });
 
             _mixTagItem  = DarkMenuRenderer.Item("Set mix tag…", OnMixTagFileMenuClick, "");
             _startIdItem = DarkMenuRenderer.Item("Set starting ID…", OnMixStartIdFileMenuClick, "");
@@ -359,7 +361,74 @@ namespace VoxCharger
                 _viewMenu.Items.Add(ViewItem(mix, mix, $"{count} song{(count == 1 ? "" : "s")}"));
             }
 
+            // Mixes the game doesn't load; picking one enables it again
+            var disabled = AssetManager.GetDisabledMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
+            if (disabled.Count > 0)
+            {
+                _viewMenu.Items.Add(new ToolStripSeparator());
+                _viewMenu.Items.Add(DarkMenuRenderer.Group("DISABLED"));
+                foreach (string mix in disabled)
+                {
+                    int count = AssetManager.CountSongs(mix);
+                    var item = DarkMenuRenderer.Item(mix, (s, ev) => EnableMix(mix), $"{count} song{(count == 1 ? "" : "s")}, off");
+                    item.Tag = "muted";
+                    _viewMenu.Items.Add(item);
+                }
+            }
+
             ShowMenu(_viewMenu, MixButton, false);
+        }
+
+        private void EnableMix(string mix)
+        {
+            var prompt = MessageBox.Show(
+                $"Enable the mix \"{mix}\"? The game loads it again from its next start.",
+                "Enable mix",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question
+            );
+
+            if (prompt != DialogResult.Yes || !ConfirmUnsaved("Enable mix"))
+                return;
+
+            try
+            {
+                AssetManager.SetMixEnabled(mix, true);
+                SelectView(mix, false);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Enable mix", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void OnDisableMixMenuClick(object sender, EventArgs e)
+        {
+            if (!CanEdit || !ConfirmUnsaved("Disable mix"))
+                return;
+
+            string mix = AssetManager.MixName;
+            var prompt = MessageBox.Show(
+                $"Disable the mix \"{mix}\"? The game stops loading it from its next start; its songs and files stay as they are " +
+                $"(the folder moves to {Path.GetFileName(AssetManager.DisabledMixesPath)}). Pick it in the mix list to enable it again.",
+                "Disable mix",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question
+            );
+
+            if (prompt != DialogResult.Yes)
+                return;
+
+            try
+            {
+                AssetManager.SetMixEnabled(mix, false);
+                var next = AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+                SelectView(next ?? ViewOriginal, false);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Disable mix", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private ToolStripMenuItem ViewItem(string text, string view, string detail)
@@ -486,6 +555,7 @@ namespace VoxCharger
             SongsButton.Enabled     = CanEdit;
             MixMenuButton.Enabled   = game;
             _deleteMixItem.Enabled  = CanEdit;
+            _disableMixItem.Enabled = CanEdit;
             ToolsButton.Enabled     = game;
             SaveButton.Enabled      = CanEdit && !_pristine;
             SortButton.Enabled      = game;

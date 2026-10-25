@@ -430,6 +430,8 @@ namespace VoxCharger
                 e.TextColor = Theme.TextOff;
             else if (e.Item.Tag as string == "danger")
                 e.TextColor = Theme.Danger;
+            else if (e.Item.Tag as string == "muted")
+                e.TextColor = Theme.TextOff;
             else if (e.TextFormat.HasFlag(TextFormatFlags.Right))
                 e.TextColor = Theme.TextDim; // shortcut column, used for counts and current values
             else

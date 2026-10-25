@@ -308,6 +308,10 @@ namespace VoxCharger
                     blocked.UnionWith(MusicIdsIn(Path.Combine(modDir, @"others\music_db.merged.xml")));
             }
 
+            // Disabled mixes keep their ids, enabling one again must not clash
+            foreach (string name in GetDisabledMixes())
+                blocked.UnionWith(MusicIdsIn(MixDbFilename(name)));
+
             var plan = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
             int next = startId;
             foreach (string mix in mixes)
@@ -396,9 +400,55 @@ namespace VoxCharger
             return ids;
         }
 
+        // Music db of a mix, enabled or disabled
         public static string MixDbFilename(string mixName)
         {
-            return Path.Combine(GamePath, "data_mods", mixName, @"others\music_db.merged.xml");
+            string enabled = Path.Combine(GamePath, "data_mods", mixName);
+            string folder  = Directory.Exists(enabled) ? enabled : Path.Combine(DisabledMixesPath, mixName);
+            return Path.Combine(folder, @"others\music_db.merged.xml");
+        }
+
+        // layeredfs loads every folder in data_mods (it only skips _cache), so a disabled mix is moved out
+        // of it, into this folder next to it, and moved back when it is enabled again
+        public static string DisabledMixesPath => Path.Combine(GamePath, "data_mods_disabled");
+
+        public static string[] GetDisabledMixes()
+        {
+            if (string.IsNullOrEmpty(GamePath) || !Directory.Exists(DisabledMixesPath))
+                return new string[0];
+
+            return Directory.GetDirectories(DisabledMixesPath)
+                .Where(dir => File.Exists(Path.Combine(dir, @"others\music_db.merged.xml")))
+                .Select(dir => new DirectoryInfo(dir).Name)
+                .ToArray();
+        }
+
+        public static void SetMixEnabled(string mixName, bool enabled)
+        {
+            string active   = Path.Combine(GamePath, "data_mods", mixName);
+            string disabled = Path.Combine(DisabledMixesPath, mixName);
+            string from     = enabled ? disabled : active;
+            string to       = enabled ? active : disabled;
+
+            if (!Directory.Exists(from))
+                throw new DirectoryNotFoundException($"The mix \"{mixName}\" was not found in {Path.GetDirectoryName(from)}");
+            if (Directory.Exists(to))
+                throw new IOException($"Cannot move the mix, {to} already exists");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(to));
+            try
+            {
+                Directory.Move(from, to);
+            }
+            catch (IOException ex)
+            {
+                throw new IOException($"The mix folder could not be moved, is the game running?\n{ex.Message}", ex);
+            }
+
+            if (enabled && !_mixList.Contains(mixName))
+                _mixList.Add(mixName);
+            else if (!enabled)
+                _mixList.Remove(mixName);
         }
 
         public static void SetMixTagId(int tagId)
@@ -494,6 +544,13 @@ namespace VoxCharger
 
                 // Confirmed mod path, append into music db
                 _internalHeaders.Load(dbFilename, true);
+            }
+
+            // Disabled mixes keep their ids, so enabling one again can't clash with songs added meanwhile
+            foreach (string disabled in GetDisabledMixes())
+            {
+                if (disabled != mixName)
+                    _internalHeaders.Load(MixDbFilename(disabled), true);
             }
         }
         #endregion
@@ -651,7 +708,7 @@ namespace VoxCharger
         // Number of songs in a mix, counted without parsing its music db
         public static int CountSongs(string mixName)
         {
-            return CountSongsIn(Path.Combine(GamePath, "data_mods", mixName, @"others\music_db.merged.xml"));
+            return CountSongsIn(MixDbFilename(mixName));
         }
 
         public static int CountOriginalSongs()
