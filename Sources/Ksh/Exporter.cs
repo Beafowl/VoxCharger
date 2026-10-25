@@ -135,6 +135,15 @@ namespace VoxCharger
                             previewOptions.PreviewOffset = src.PreviewOffset / 1000;
                     }
 
+                    // Without any music there's nothing to play; name the file the chart asks for
+                    if (!charts.Values.Any(c => !string.IsNullOrEmpty(c.MusicFileName) && File.Exists(c.MusicFileName)))
+                    {
+                        string wanted = charts.Values.Select(c => c.Source?.MusicFileName).FirstOrDefault(m => !string.IsNullOrEmpty(m));
+                        throw new FileNotFoundException(wanted != null
+                            ? $"music file not found: {wanted}"
+                            : "the chart names no music file (m=)");
+                    }
+
                     // Import all music assets
                     AssetManager.ImportVox(header);
 
