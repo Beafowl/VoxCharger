@@ -172,6 +172,12 @@ namespace VoxCharger
         private static void Export(Item it, Progress progress)
         {
             Dictionary<Difficulty, ChartInfo> charts = null;
+            if (it.Mid <= 0 || it.Mid > AssetManager.MaxMusicId)
+            {
+                it.Error = $"music ID {it.Mid} is outside 1..{AssetManager.MaxMusicId}";
+                return;
+            }
+
             try
             {
                 var mainKsh = new Ksh();

@@ -131,6 +131,9 @@ namespace VoxCharger
             InitializeComponent();
             Theme.Attach(this);
 
+            // A number field clamps whatever is typed to its maximum, which used to be 999999
+            StartingIdNumericUpDown.Maximum = AssetManager.MaxMusicId;
+
             _target = path;
             _mode   = convert;
 
@@ -256,7 +259,7 @@ namespace VoxCharger
  
                 Result       = main.ToHeader();
                 Result.Id    = AssetManager.GetNextMusicId();
-                StartingIdNumericUpDown.Value = Result.Id;
+                StartingIdNumericUpDown.Value = Math.Min(Result.Id, AssetManager.MaxMusicId);
                 Result.Ascii = _defaultAscii = AsciiTextBox.Text = Path.GetFileName(Path.GetDirectoryName(_target));
                 _exporter     = new Ksh.Exporter(main);
 

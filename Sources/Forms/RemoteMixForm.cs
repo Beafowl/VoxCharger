@@ -340,7 +340,7 @@ namespace VoxCharger
 
                                 // Validate music ID against game's internal database
                                 // to avoid conflicts with official songs that would crash the game
-                                if (!AssetManager.ValidateMusicId(header.Id))
+                                if (!AssetManager.ValidateMusicId(header.Id) || header.Id > AssetManager.MaxMusicId)
                                 {
                                     header.Id = AssetManager.GetNextMusicId();
                                     errors.Add($"{song.title}: Music ID {song.music_id} conflicts with game data, reassigned to {header.Id}");

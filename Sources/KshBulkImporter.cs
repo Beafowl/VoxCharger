@@ -75,10 +75,13 @@ namespace VoxCharger
             AssignIds(pending, settings.StartId);
             progress.Write($"Found {songs.Count} song(s), {result.Skipped} already in the mix, importing {pending.Count}");
 
+            foreach (var song in pending.Where(s => s.Id > AssetManager.MaxMusicId))
+                song.Error = $"no free music ID left, the game uses IDs up to {AssetManager.MaxMusicId}";
+
             ManifestRecorder.BeginBatch();
             try
             {
-                ExportAll(pending, settings, progress);
+                ExportAll(pending.Where(s => s.Error == null).ToList(), settings, progress);
             }
             finally
             {

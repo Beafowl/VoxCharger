@@ -217,9 +217,9 @@ namespace VoxCharger
 
         private void OnApplyClick(object sender, EventArgs e)
         {
-            if (!int.TryParse(_id.Text.Trim(), out int id) || id <= 0)
+            if (!int.TryParse(_id.Text.Trim(), out int id) || id <= 0 || id > AssetManager.MaxMusicId)
             {
-                Warn("Music ID must be a positive number.", _id);
+                Warn($"Music ID must be a number from 1 to {AssetManager.MaxMusicId}.", _id);
                 return;
             }
 

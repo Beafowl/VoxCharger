@@ -112,6 +112,14 @@ namespace VoxCharger
             var plan  = AssetManager.PlanRenumberMixes(mixes, start);
             var ids   = plan.Values.SelectMany(m => m.Values).ToList();
             int moved = plan.Values.Sum(m => m.Count(pair => pair.Key != pair.Value));
+            if (ids.Count > 0 && ids.Max() > AssetManager.MaxMusicId)
+            {
+                _preview.ForeColor = Theme.Danger;
+                _preview.Text = $"From {start} the songs would need IDs up to {ids.Max()}; the game uses IDs up to {AssetManager.MaxMusicId}.";
+                return;
+            }
+
+            _preview.ForeColor = Theme.TextMuted;
             _preview.Text = ids.Count == 0
                 ? "The selected mixes have no songs."
                 : $"{ids.Count} songs get IDs {ids.Min()}–{ids.Max()}; {moved} of them change.";
@@ -126,9 +134,17 @@ namespace VoxCharger
                 return;
             }
 
-            if (!int.TryParse(_startId.Text.Trim(), out int start) || start <= 0)
+            if (!int.TryParse(_startId.Text.Trim(), out int start) || start <= 0 || start > AssetManager.MaxMusicId)
             {
-                MessageBox.Show(this, "Starting ID must be a positive number.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, $"Starting ID must be a number from 1 to {AssetManager.MaxMusicId}.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _startId.Focus();
+                return;
+            }
+
+            int highest = AssetManager.PlanRenumberMixes(mixes, start).Values.SelectMany(m => m.Values).DefaultIfEmpty(0).Max();
+            if (highest > AssetManager.MaxMusicId)
+            {
+                MessageBox.Show(this, $"From {start} the songs would need IDs up to {highest}; the game uses IDs up to {AssetManager.MaxMusicId}. Choose a lower starting ID.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _startId.Focus();
                 return;
             }

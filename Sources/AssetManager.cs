@@ -128,6 +128,12 @@ namespace VoxCharger
         // dummy jacket in the list and the preview.
         public const int MaxJacketMusicId = 9000;
 
+        // Highest music id the game can use at all: its per-song tables hold 65535 ids with the
+        // sdvx-mid-unlock id patch (3072 without it). Higher ids never show up, and at every start the
+        // game downloads high scores for every id up to the highest one (768 per request), so a song at
+        // 999999 keeps the download, and with it every card-in ("server busy"), going for 10+ minutes.
+        public const int MaxMusicId = 65534;
+
         // Jacket thumbnail archives of the game build (data/graphics/s_jacketNN.ifs). A mix's
         // thumbnails are spread over them by music id so ifs_layeredfs keeps each injected
         // texture small: one 4096x4096 canvas for a whole mix is more than the game takes.
@@ -756,7 +762,9 @@ namespace VoxCharger
 
             // With a starting id the mix numbers from there (ids in use by the game, other mixes
             // or this mix are skipped); without one, continue after the highest id anywhere
-            return GetFreeMusicId(MixStartId > 0 ? MixStartId : _internalHeaders.LastId + 1);
+            // Ids past the limit (from an older version) don't count, new songs would land there too
+            int highest = _internalHeaders.Select(h => h.Id).Where(id => id <= MaxMusicId).DefaultIfEmpty(0).Max();
+            return GetFreeMusicId(MixStartId > 0 ? MixStartId : highest + 1);
         }
 
         // First id at or above `from` that no other mix, the game or this mix uses

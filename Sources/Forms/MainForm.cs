@@ -542,6 +542,38 @@ namespace VoxCharger
             ApplyCurrentSort();
             UpdateUi();
             ShowSelection();
+
+            if (CanEdit)
+                WarnIdsTooHigh();
+        }
+
+        // Older versions accepted starting ids up to 999999 (a number field clamps what is typed to its maximum)
+        private void WarnIdsTooHigh()
+        {
+            var high = AssetManager.Headers.Where(h => h.Id > AssetManager.MaxMusicId).ToList();
+            if (high.Count == 0)
+                return;
+
+            string mix = AssetManager.MixName;
+            Action show = () => MessageBox.Show(
+                this,
+                $"{high.Count} song(s) in \"{mix}\" have music IDs above {AssetManager.MaxMusicId} (the highest is {high.Max(h => h.Id)}).\n\n" +
+                "The game can't show those songs. Worse, at every start it downloads the high scores of every ID up to the highest one, " +
+                "768 IDs per request, and until that is done carding in fails with \"server busy\".\n\n" +
+                "Use Tools › Renumber mixes to give them lower IDs.",
+                "Music IDs too high",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning
+            );
+
+            if (IsHandleCreated)
+                BeginInvoke(show);
+            else
+            {
+                EventHandler once = null;
+                once = (s, e) => { Shown -= once; show(); };
+                Shown += once;
+            }
         }
 
         private void UpdateUi()
@@ -666,10 +698,10 @@ namespace VoxCharger
                 if (prompt.ShowDialog() != DialogResult.OK)
                     return;
 
-                if (!int.TryParse(prompt.Value, out int startId) || startId < 0)
+                if (!int.TryParse(prompt.Value, out int startId) || startId < 0 || startId + Math.Max(0, AssetManager.Headers.Count - 1) > AssetManager.MaxMusicId)
                 {
                     MessageBox.Show(
-                        "Starting ID must be a non-negative number",
+                        $"Starting ID must be a non-negative number, low enough that the mix's songs fit below {AssetManager.MaxMusicId + 1}",
                         "Error",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning
