@@ -920,38 +920,120 @@ namespace VoxCharger
                 return;
             }
 
-            var files = new List<(string name, string path)> { ("Original", Path.Combine(AssetManager.GamePath, @"data\others\music_db.xml")) };
-            foreach (string mix in AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase))
-                files.Add((mix, AssetManager.MixDbFilename(mix)));
+            const string title = "Check song lists with the game";
+            string original = Path.Combine(AssetManager.GamePath, @"data\others\music_db.xml");
+            string merged   = Path.Combine(AssetManager.GamePath, @"data_mods\_cache\others\music_db.xml");
+            var mixes       = AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
 
-            string merged = Path.Combine(AssetManager.GamePath, @"data_mods\_cache\others\music_db.xml");
-            if (File.Exists(merged))
-                files.Add(("Merged list from the last game start", merged));
+            // name, file, error (null = accepted), in display order
+            List<(string name, string path, string error)> Run()
+            {
+                var list = new List<(string, string, string)> { ("Original", original, AvsCheck.Check(original)) };
+                foreach (string mix in mixes)
+                    list.Add((mix, AssetManager.MixDbFilename(mix), AvsCheck.Check(AssetManager.MixDbFilename(mix))));
+                if (File.Exists(merged))
+                    list.Add(("Merged list from the last game start", merged, AvsCheck.Check(merged)));
+                return list;
+            }
 
-            var lines = new List<string>();
+            string Report(List<(string name, string path, string error)> list) =>
+                string.Join("\n", list.Select(r => r.error == null ? $"{r.name}: OK" : $"{r.name}: REJECTED (error {r.error})"));
+
             Cursor = Cursors.WaitCursor;
+            List<(string name, string path, string error)> results;
+            try { results = Run(); }
+            finally { Cursor = Cursors.Default; }
+
+            var rejectedMixes = results.Where(r => r.error != null && mixes.Contains(r.name)).Select(r => r.name).ToList();
+            bool mergedRejected   = results.Any(r => r.path == merged && r.error != null);
+            bool originalRejected = results[0].error != null;
+
+            if (rejectedMixes.Count == 0 && !mergedRejected && !originalRejected)
+            {
+                MessageBox.Show(Report(results) + "\n\nThe game's reader accepts every list.", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string note = originalRejected
+                ? "\n\nThe game's own song list is rejected; VoxCharger can't repair that one, the game data needs to be restored."
+                : string.Empty;
+
+            if (rejectedMixes.Count > 0)
+            {
+                var answer = MessageBox.Show(
+                    Report(results) + note + "\n\nA rejected list makes the game load no songs at all.\n\n" +
+                    $"Repair {(rejectedMixes.Count == 1 ? "the mix" : $"these {rejectedMixes.Count} mixes")} now? " +
+                    "VoxCharger loads each song list and writes it again, which replaces the characters the game can't read. " +
+                    "The merged list is rebuilt at the next game start.",
+                    title,
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning
+                );
+
+                if (answer != DialogResult.Yes || !ConfirmUnsaved(title))
+                    return;
+
+                var outcome = new List<string>();
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    foreach (string mix in rejectedMixes)
+                    {
+                        try
+                        {
+                            string error = RepairMixDb(AssetManager.MixDbFilename(mix));
+                            outcome.Add(error == null ? $"{mix}: repaired, the game's reader accepts it now" : $"{mix}: still REJECTED (error {error}), please report it with the mix's others\\music_db.merged.xml");
+                        }
+                        catch (Exception ex)
+                        {
+                            outcome.Add($"{mix}: could not be repaired: {ex.Message}");
+                        }
+                    }
+                }
+                finally
+                {
+                    Cursor = Cursors.Default;
+                }
+
+                // The open mix was rewritten on disk; show what is there now
+                if (rejectedMixes.Contains(_view, StringComparer.OrdinalIgnoreCase))
+                    SelectView(_view, false);
+
+                MessageBox.Show(string.Join("\n", outcome) + "\n\nStart the game once so the merged list is rebuilt.", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Every mix passes but the merged list doesn't: it is older than the mixes, or the merge went wrong
+            var rebuild = MessageBox.Show(
+                Report(results) + note + "\n\nEvery mix passes, but the merged list from the last game start is rejected. " +
+                "Delete it so the game builds it again at the next start?",
+                title,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning
+            );
+
+            if (rebuild != DialogResult.Yes)
+                return;
+
             try
             {
-                foreach (var (name, path) in files)
-                {
-                    string error = AvsCheck.Check(path);
-                    lines.Add(error == null ? $"{name}: OK" : $"{name}: REJECTED (error {error})");
-                }
+                File.Delete(merged);
+                MessageBox.Show("Deleted. The game rebuilds the merged list at its next start.", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-            finally
+            catch (Exception ex)
             {
-                Cursor = Cursors.Default;
+                MessageBox.Show($"The merged list could not be deleted: {ex.Message}", title, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
 
-            bool anyRejected = lines.Any(l => l.Contains("REJECTED"));
-            MessageBox.Show(
-                string.Join("\n", lines) + (anyRejected
-                    ? "\n\nA rejected list makes the game load no songs at all. Open the mix and save it; if it is still rejected, please report it."
-                    : "\n\nThe game's reader accepts every list."),
-                "Check song lists with the game",
-                MessageBoxButtons.OK,
-                anyRejected ? MessageBoxIcon.Warning : MessageBoxIcon.Information
-            );
+        // Loads a mix's song list and writes it again; the writer replaces what the game's reader rejects
+        // (MusicDb.AvsText). Returns the reader's error for the rewritten file, null when it is accepted.
+        private static string RepairMixDb(string path)
+        {
+            var db = new MusicDb();
+            db.Load(path);
+            db.Save(path);
+            return AvsCheck.Check(path);
         }
 
         private void QueueAction(string key, Action action)
