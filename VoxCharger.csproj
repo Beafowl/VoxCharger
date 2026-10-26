@@ -264,6 +264,7 @@
     <Compile Include="Sources\Encoders\DxEncoder.cs" />
     <Compile Include="Sources\Encoders\LoudnessNormalizer.cs" />
     <Compile Include="Sources\Encoders\FfmpegProvider.cs" />
+    <Compile Include="Sources\AvsCheck.cs" />
     <Compile Include="Sources\Events\Controller\Camera.cs" />
     <Compile Include="Sources\Events\Controller\Radian.cs" />
     <Compile Include="Sources\Events\Controller\LaneClear.cs" />

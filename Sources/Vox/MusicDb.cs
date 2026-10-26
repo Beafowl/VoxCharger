@@ -164,7 +164,7 @@ namespace VoxCharger
             {
                 var prop  = doc.CreateElement(n);
                 if (v != null)
-                    prop.AppendChild(doc.CreateTextNode(v));
+                    prop.AppendChild(doc.CreateTextNode(AvsText(v)));
                 
                 if (!string.IsNullOrEmpty(t))
                     prop.SetAttribute("__type", t);
@@ -263,6 +263,47 @@ namespace VoxCharger
                 doc.AppendChild(master);
                 doc.Save(writer);
             }
+        }
+
+        // The game's XML reader (avs2-core) rejects the Shift-JIS bytes 0x80, 0xA0 and 0xFD-0xFF, which
+        // .NET's codec maps to these code points, and control characters. One such byte anywhere in the
+        // merged music db makes the game load no songs at all, without a word in its log (the reader's
+        // size query returns an error code the game only tests for being negative). 0xA0 is a Latin-1
+        // non-breaking space in most files it comes from.
+        public static string AvsText(string text)
+        {
+            if (text == null || !text.Any(IsUnreadable))
+                return text;
+
+            var chars = text.ToCharArray();
+            for (int i = 0; i < chars.Length; i++)
+            {
+                if (IsUnreadable(chars[i]))
+                    chars[i] = chars[i] == '' ? ' ' : '?';
+            }
+
+            return new string(chars);
+        }
+
+        private static bool IsUnreadable(char c)
+        {
+            return c == '\u0080' || (c >= '' && c <= '') || (c < ' ' && c != '\t' && c != '\n' && c != '\r');
+        }
+
+        // True when saving would change one of the song's texts
+        public static bool HasUnreadableText(VoxHeader header)
+        {
+            var texts = new List<string> { header.Title, header.TitleYomigana, header.Artist, header.ArtistYomigana, header.Ascii };
+            if (header.Levels != null)
+            {
+                foreach (var level in header.Levels.Values)
+                {
+                    texts.Add(level.Illustrator);
+                    texts.Add(level.Effector);
+                }
+            }
+
+            return texts.Any(t => t != null && t.Any(IsUnreadable));
         }
 
         public void Add(VoxHeader header)

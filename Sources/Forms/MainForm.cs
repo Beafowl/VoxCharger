@@ -45,6 +45,7 @@ namespace VoxCharger
         private ToolStripMenuItem _mixTagItem;
         private ToolStripMenuItem _startIdItem;
         private ToolStripMenuItem _renumberItem;
+        private ToolStripMenuItem _checkItem;
         private ToolStripMenuItem _reconvertItem;
         private ToolStripMenuItem _removeSongItem;
         private ToolStripSeparator _listSeparator;
@@ -267,13 +268,15 @@ namespace VoxCharger
             _mixTagItem  = DarkMenuRenderer.Item("Set mix tag…", OnMixTagFileMenuClick, "");
             _startIdItem = DarkMenuRenderer.Item("Set starting ID…", OnMixStartIdFileMenuClick, "");
             _renumberItem = DarkMenuRenderer.Item("Renumber mixes…", OnRenumberMixesMenuClick);
+            _checkItem    = DarkMenuRenderer.Item("Check song lists with the game…", OnCheckWithGameMenuClick);
             _gameFolderItem = DarkMenuRenderer.Item("Change game folder…", OnGamePathButtonClick, "");
-            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem, _renumberItem, new ToolStripSeparator(), _gameFolderItem });
+            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem, _renumberItem, _checkItem, new ToolStripSeparator(), _gameFolderItem });
             _toolsMenu.Opening += (s, e) =>
             {
                 _mixTagItem.Enabled  = CanEdit;
                 _startIdItem.Enabled = CanEdit;
                 _renumberItem.Enabled = AssetManager.GetMixes().Length > 0;
+                _checkItem.Enabled    = HasGame;
                 _gameFolderItem.ShortcutKeyDisplayString = ShortPath(AssetManager.GamePath);
                 _mixTagItem.ShortcutKeyDisplayString  = AssetManager.MixTagId > 0 ? AssetManager.MixTagId.ToString() : "none";
                 _startIdItem.ShortcutKeyDisplayString = AssetManager.MixStartId > 0 ? AssetManager.MixStartId.ToString() : "none";
@@ -544,7 +547,44 @@ namespace VoxCharger
             ShowSelection();
 
             if (CanEdit)
+            {
                 WarnIdsTooHigh();
+                WarnUnreadableText();
+            }
+        }
+
+        // Songs whose texts carry characters the game's XML reader rejects (see MusicDb.AvsText).
+        // Written by earlier versions; saving the mix replaces them.
+        private void WarnUnreadableText()
+        {
+            var bad = AssetManager.Headers.Where(MusicDb.HasUnreadableText).ToList();
+            if (bad.Count == 0)
+                return;
+
+            MarkDirty();
+            string mix   = AssetManager.MixName;
+            string names = string.Join("\n", bad.Take(5).Select(h => $"- {h.Id} {VoxHeader.WithDecodedSymbols(h.Title)}"));
+            if (bad.Count > 5)
+                names += $"\n... and {bad.Count - 5} more";
+
+            Action show = () => MessageBox.Show(
+                this,
+                $"{bad.Count} song(s) in \"{mix}\" contain characters in their title, artist or effector name that the game's file reader rejects:\n{names}\n\n" +
+                "With them in the song list the game loads no songs at all and carding in fails with \"server busy\".\n\n" +
+                "They are replaced when the mix is saved: click Save.",
+                "Unreadable characters",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning
+            );
+
+            if (IsHandleCreated)
+                BeginInvoke(show);
+            else
+            {
+                EventHandler once = null;
+                once = (s, e) => { Shown -= once; show(); };
+                Shown += once;
+            }
         }
 
         // Older versions accepted starting ids up to 999999 (a number field clamps what is typed to its maximum)
@@ -863,6 +903,55 @@ namespace VoxCharger
             if (errors.Count > 15)
                 message += $"\n... and {errors.Count - 15} more.";
             MessageBox.Show(message + $"\n\n{ranges}", "Renumber mixes", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        // Runs the game's XML reader over every song list: the game's own, each enabled mix and, when
+        // layeredfs has written it, the merged file the game actually loads
+        private void OnCheckWithGameMenuClick(object sender, EventArgs e)
+        {
+            if (!AvsCheck.Available)
+            {
+                MessageBox.Show(
+                    $"The game's file reader was not found:\n{AvsCheck.DllPath}\n\nThe check needs the game's modules folder.",
+                    "Check song lists",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+
+            var files = new List<(string name, string path)> { ("Original", Path.Combine(AssetManager.GamePath, @"data\others\music_db.xml")) };
+            foreach (string mix in AssetManager.GetMixes().OrderBy(m => m, StringComparer.OrdinalIgnoreCase))
+                files.Add((mix, AssetManager.MixDbFilename(mix)));
+
+            string merged = Path.Combine(AssetManager.GamePath, @"data_mods\_cache\others\music_db.xml");
+            if (File.Exists(merged))
+                files.Add(("Merged list from the last game start", merged));
+
+            var lines = new List<string>();
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                foreach (var (name, path) in files)
+                {
+                    string error = AvsCheck.Check(path);
+                    lines.Add(error == null ? $"{name}: OK" : $"{name}: REJECTED (error {error})");
+                }
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
+
+            bool anyRejected = lines.Any(l => l.Contains("REJECTED"));
+            MessageBox.Show(
+                string.Join("\n", lines) + (anyRejected
+                    ? "\n\nA rejected list makes the game load no songs at all. Open the mix and save it; if it is still rejected, please report it."
+                    : "\n\nThe game's reader accepts every list."),
+                "Check song lists with the game",
+                MessageBoxButtons.OK,
+                anyRejected ? MessageBoxIcon.Warning : MessageBoxIcon.Information
+            );
         }
 
         private void QueueAction(string key, Action action)
@@ -2082,6 +2171,7 @@ namespace VoxCharger
         private bool Save(string dbFilename)
         {
             var errors = new List<string>();
+            string rejected = null;
             using (var loader = new LoadingForm())
             {
                 var proc = new Action<LoadingForm>(dialog =>
@@ -2115,6 +2205,10 @@ namespace VoxCharger
                     if (dbFilename == AssetManager.MdbFilename)
                         AssetManager.SaveMixSettings();
 
+                    // The game's own reader has the last word on the saved file
+                    try { rejected = AvsCheck.Check(dbFilename); }
+                    catch (Exception ex) { Debug.WriteLine($"avs check failed: {ex.Message}"); }
+
                     dialog.Complete();
                 });
 
@@ -2129,6 +2223,18 @@ namespace VoxCharger
                     message += $"\n{err}";
 
                 MessageBox.Show(message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+
+            if (rejected != null)
+            {
+                MessageBox.Show(
+                    $"The game's file reader rejects the saved song list (error {rejected}).\n\n" +
+                    "With this mix enabled the game would load no songs at all and carding in would fail with \"server busy\". " +
+                    "Please report this together with the mix's others\\music_db.merged.xml.",
+                    "Song list rejected by the game",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
             }
 
             _actions.Clear();
