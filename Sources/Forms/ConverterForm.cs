@@ -131,8 +131,12 @@ namespace VoxCharger
             InitializeComponent();
             Theme.Attach(this);
 
-            // A number field clamps whatever is typed to its maximum, which used to be 999999
-            StartingIdNumericUpDown.Maximum = AssetManager.MaxMusicId;
+            // A number field caps whatever is typed at its maximum when it loses focus, without a word; at
+            // 999999 that turned a mistyped id into a valid looking one. The maximum is far above any usable
+            // id so a typo stays visible, CheckStartingId refuses it. Typing into the field replaces the
+            // pre-filled id instead of adding digits to it.
+            StartingIdNumericUpDown.Maximum = 999999999;
+            StartingIdNumericUpDown.Enter += (s, e) => BeginInvoke(new Action(() => StartingIdNumericUpDown.Select(0, StartingIdNumericUpDown.Text.Length)));
 
             _target = path;
             _mode   = convert;
@@ -527,6 +531,9 @@ namespace VoxCharger
                 }
             };
 
+            if ((_mode == ConvertMode.Importer || _mode == ConvertMode.BulkImporter) && !CheckStartingId())
+                return;
+
             // Act as converter
             switch (_mode)
             {
@@ -537,6 +544,25 @@ namespace VoxCharger
                 case ConvertMode.ReverseConverter:      SingleReverseConvert(); break;
                 case ConvertMode.BulkReverseConverter:  BulkReverseConvert();   break;
             }
+        }
+
+        // Typing into the pre-filled id without selecting it first (10761 + "3000" = 107613000) used to
+        // start an import at 999999, the field's old maximum
+        private bool CheckStartingId()
+        {
+            decimal id = StartingIdNumericUpDown.Value;
+            if (id >= 1 && id <= AssetManager.MaxMusicId)
+                return true;
+
+            MessageBox.Show(
+                this,
+                $"The music ID {id} is not usable. Enter a number from 1 to {AssetManager.MaxMusicId}.",
+                "Music ID",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning
+            );
+            StartingIdNumericUpDown.Focus();
+            return false;
         }
 
         private void SingleImport()
