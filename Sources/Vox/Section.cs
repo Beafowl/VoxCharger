@@ -28,7 +28,8 @@ namespace VoxCharger
             TrackAuto      = 18,
             Spcontroler     = 19,
             SoundId        = 20,
-            Bpm             = 21
+            Bpm             = 21,
+            BeatResolution = 22
         }
 
         public static bool IsTrackSection(Section section)

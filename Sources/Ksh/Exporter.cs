@@ -63,6 +63,7 @@ namespace VoxCharger
                     var level   = ksh.ToLevelHeader();
                     level.Chart = vox;
                     level.Radar = RadarCalculator.Calculate(vox, level.Level);
+                    level.MaxExScore = ExScoreCalculator.Calculate(vox);
 
                     info.Source = ksh;
                     header.Levels[chart.Key] = charts[chart.Key].Header = level;

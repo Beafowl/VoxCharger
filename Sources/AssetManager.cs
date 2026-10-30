@@ -673,6 +673,42 @@ namespace VoxCharger
             }
         }
 
+        // Songs imported before VoxCharger wrote max_exscore get it from their charts on disk
+        public static int FillMissingExScores(Action<string> status = null)
+        {
+            int done = 0;
+            foreach (var header in Headers)
+            {
+                if (header.Levels == null)
+                    continue;
+
+                foreach (var level in header.Levels.Values)
+                {
+                    if (level.Level <= 0 || level.MaxExScore > 0)
+                        continue;
+
+                    string path = GetVoxPath(header, level.Difficulty);
+                    if (!File.Exists(path))
+                        continue;
+
+                    try
+                    {
+                        var chart = new VoxChart();
+                        chart.Parse(path);
+                        level.MaxExScore = ExScoreCalculator.Calculate(chart);
+                        if (++done % 50 == 0)
+                            status?.Invoke($"Max EX score of {done} charts computed..");
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"max ex score of {path}: {ex.Message}");
+                    }
+                }
+            }
+
+            return done;
+        }
+
         public static void ImportVox(VoxHeader header, Difficulty diff, VoxChart chart)
         {
             Directory.CreateDirectory(GetMusicPath(header));

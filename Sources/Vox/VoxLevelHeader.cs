@@ -15,6 +15,9 @@ namespace VoxCharger
         public int JacketPrint       { get; set; } = -2;
         public int JacketMask        { get; set; } = 0;
 
+        // Highest EX score of the chart (music_db max_exscore), 0 = unknown; see ExScoreCalculator
+        public int MaxExScore        { get; set; }
+
         public VoxLevelRadar Radar   { get; set; }
         public VoxChart Chart        { get; set; }
         public Image Jacket          { get; set; }

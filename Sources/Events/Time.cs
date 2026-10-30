@@ -164,7 +164,7 @@ namespace VoxCharger
         public static bool operator !=(Time a, Time b)
         {
             if (ReferenceEquals(a, null) || ReferenceEquals(b, null))
-                return ReferenceEquals(a, b);
+                return !ReferenceEquals(a, b);
 
             return a.Measure != b.Measure || a.Beat != b.Beat || a.Offset != b.Offset;
         }

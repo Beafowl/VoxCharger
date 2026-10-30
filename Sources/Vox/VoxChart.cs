@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -38,12 +39,21 @@ namespace VoxCharger
                 EndPosition = new Time(chart.MeasureCount + 1, 1, 0);
         }
 
+        // A cell count of a BEAT RESOLUTION chart in 48ths of a beat
+        private static int ScaleCells(int cells, int resolution)
+        {
+            return (int)Math.Round(cells * 48.0 / resolution);
+        }
+
         public void Parse(string fileName)
         {
             var current = Section.NoState;
             var lines   = File.ReadAllLines(fileName, DefaultEncoding);
 
             Event.Stop stop = null;
+
+            // Cells per beat, 48 unless the chart declares a BEAT RESOLUTION
+            int resolution = 48;
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i].Trim().Trim('\t');
@@ -94,6 +104,8 @@ namespace VoxCharger
                  */ 
                 var data = line.Trim().Split('\t').Select(p => p.Trim()).ToArray();
                 var time = Time.FromString(data[0]);
+                if (time != null && resolution != 48)
+                    time.Offset = ScaleCells(time.Offset, resolution);
                 #endregion
 
                 #region --- FORMAT VERSION ---
@@ -108,6 +120,17 @@ namespace VoxCharger
                         Version = ver;
                     else
                         Debug.WriteLine($"[FORMAT] {i+1:D4}: Invalid version format");
+                }
+                #endregion
+                #region --- BEAT RESOLUTION ---
+                else if (current == Section.BeatResolution)
+                {
+                    // Cells per beat of every position and length in the file (some stock charts use
+                    // 144, 240, 336, 480 or 1680); positions are kept in 48ths of a beat
+                    if (int.TryParse(line, out int cells) && cells > 0)
+                        resolution = cells;
+                    else
+                        Debug.WriteLine($"[BEAT_RESOLUTION] {i+1:D4}: Invalid resolution");
                 }
                 #endregion
                 #region --- BEAT INFO ---
@@ -435,6 +458,9 @@ namespace VoxCharger
                         continue;
                     }
 
+                    if (resolution != 48)
+                        duration = ScaleCells(duration, resolution);
+
                     var cameraWork = Camera.Create(work, time, duration, start, end);
                     if (cameraWork is Camera.Tilt tiltRow && data.Length > 6 &&
                         float.TryParse(data[6], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float nodeType))
@@ -480,10 +506,16 @@ namespace VoxCharger
                             continue;
                         }
 
-                        if (!int.TryParse(data[1], out int offset))
+                        // The position is 0..127, or a 0..1 float in many format 12+ charts
+                        if (!int.TryParse(data[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int offset))
                         {
-                            Debug.WriteLine($"[TRACK_{trackId}] {i+1:D4}: Invalid laser offset");
-                            continue;
+                            if (!float.TryParse(data[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float position))
+                            {
+                                Debug.WriteLine($"[TRACK_{trackId}] {i+1:D4}: Invalid laser offset");
+                                continue;
+                            }
+
+                            offset = (int)Math.Round(position <= 1f ? position * 127f : position);
                         }
 
                         if (!Enum.TryParse(data[2], out Event.LaserFlag flag))
@@ -562,6 +594,8 @@ namespace VoxCharger
                         var track = (Event.ButtonTrack)trackId;
                         if (!int.TryParse(data[1], out int holdLength))
                             Debug.WriteLine($"[TRACK_{trackId}] {i+1:D4}: Invalid chip hold length");
+                        else if (resolution != 48)
+                            holdLength = ScaleCells(holdLength, resolution);
 
                         var chip = new Event.Button(time, track, holdLength, null);
                         if (chip.IsFx)

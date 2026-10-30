@@ -119,6 +119,7 @@ namespace VoxCharger
                         Limited     = int.Parse(diffInfo.SelectSingleNode("limited").InnerText),
                         JacketPrint = int.Parse(diffInfo.SelectSingleNode("jacket_print").InnerText),
                         JacketMask  = int.Parse(diffInfo.SelectSingleNode("jacket_mask").InnerText),
+                        MaxExScore  = int.TryParse(diffInfo.SelectSingleNode("max_exscore")?.InnerText, out int maxEx) ? maxEx : 0,
                     };
 
                     if (diffInfo.SelectSingleNode("radar") != null)
@@ -224,6 +225,7 @@ namespace VoxCharger
                     detail.AppendChild(createMetaElement(doc, "limited",      lvHeader.Limited.ToString(), "u8"));
                     detail.AppendChild(createMetaElement(doc, "jacket_print", lvHeader.JacketPrint.ToString(), "s32"));
                     detail.AppendChild(createMetaElement(doc, "jacket_mask",  lvHeader.JacketMask.ToString(), "s32"));
+                    detail.AppendChild(createMetaElement(doc, "max_exscore",  lvHeader.MaxExScore.ToString(), "s32"));
 
                     if (lvHeader.Radar != null)
                     {

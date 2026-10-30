@@ -2283,6 +2283,13 @@ namespace VoxCharger
                     dialog.SetStatus("[100%] - Processing Music DB..");
                     dialog.SetProgress(100f);
 
+                    // Older imports have no max EX score yet
+                    if (dbFilename == AssetManager.MdbFilename)
+                    {
+                        try { AssetManager.FillMissingExScores(s => dialog.SetStatus($"[100%] - {s}")); }
+                        catch (Exception ex) { Debug.WriteLine($"max ex scores: {ex.Message}"); }
+                    }
+
                     AssetManager.Headers.Save(dbFilename);
                     if (dbFilename == AssetManager.MdbFilename)
                         AssetManager.SaveMixSettings();
