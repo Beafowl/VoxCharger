@@ -45,6 +45,7 @@ namespace VoxCharger
         private ToolStripMenuItem _mixTagItem;
         private ToolStripMenuItem _startIdItem;
         private ToolStripMenuItem _renumberItem;
+        private ToolStripMenuItem _rebuildItem;
         private ToolStripMenuItem _checkItem;
         private ToolStripMenuItem _reconvertItem;
         private ToolStripMenuItem _removeSongItem;
@@ -268,14 +269,16 @@ namespace VoxCharger
             _mixTagItem  = DarkMenuRenderer.Item("Set mix tag…", OnMixTagFileMenuClick, "");
             _startIdItem = DarkMenuRenderer.Item("Set starting ID…", OnMixStartIdFileMenuClick, "");
             _renumberItem = DarkMenuRenderer.Item("Renumber mixes…", OnRenumberMixesMenuClick);
+            _rebuildItem  = DarkMenuRenderer.Item("Rebuild song lists…", OnRebuildSongListsMenuClick);
             _checkItem    = DarkMenuRenderer.Item("Check song lists with the game…", OnCheckWithGameMenuClick);
             _gameFolderItem = DarkMenuRenderer.Item("Change game folder…", OnGamePathButtonClick, "");
-            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem, _renumberItem, _checkItem, new ToolStripSeparator(), _gameFolderItem });
+            _toolsMenu.Items.AddRange(new ToolStripItem[] { _mixTagItem, _startIdItem, _renumberItem, _rebuildItem, _checkItem, new ToolStripSeparator(), _gameFolderItem });
             _toolsMenu.Opening += (s, e) =>
             {
                 _mixTagItem.Enabled  = CanEdit;
                 _startIdItem.Enabled = CanEdit;
                 _renumberItem.Enabled = AssetManager.GetMixes().Length > 0;
+                _rebuildItem.Enabled  = _renumberItem.Enabled;
                 _checkItem.Enabled    = HasGame;
                 _gameFolderItem.ShortcutKeyDisplayString = ShortPath(AssetManager.GamePath);
                 _mixTagItem.ShortcutKeyDisplayString  = AssetManager.MixTagId > 0 ? AssetManager.MixTagId.ToString() : "none";
@@ -903,6 +906,90 @@ namespace VoxCharger
             if (errors.Count > 15)
                 message += $"\n... and {errors.Count - 15} more.";
             MessageBox.Show(message + $"\n\n{ranges}", "Renumber mixes", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        // Writes the song list of the picked mixes again, with the max EX score of every chart computed
+        // from its chart file (AssetManager.RebuildMixDbs)
+        private void OnRebuildSongListsMenuClick(object sender, EventArgs e)
+        {
+            const string title = "Rebuild song lists";
+            if (!ConfirmUnsaved(title))
+                return;
+
+            IList<string> mixes;
+            var preselected = CanEdit ? new[] { _view } : AssetManager.GetMixes();
+            using (var form = new RebuildMixesForm(AssetManager.GetMixes(), preselected))
+            {
+                if (form.ShowDialog(this) != DialogResult.OK)
+                    return;
+
+                mixes = form.Mixes;
+            }
+
+            List<AssetManager.MixRebuild> results = null;
+            string failure = null;
+            var watch = Stopwatch.StartNew();
+            using (var loader = new LoadingForm())
+            {
+                loader.SetAction(dialog => new Thread(() =>
+                {
+                    try
+                    {
+                        results = AssetManager.RebuildMixDbs(mixes, (status, percent) =>
+                        {
+                            dialog.SetStatus(status);
+                            dialog.SetProgress(percent);
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex.Message;
+                    }
+                    finally
+                    {
+                        dialog.Complete();
+                    }
+                }).Start());
+
+                loader.ShowDialog(this);
+            }
+
+            // Every mix was loaded in turn; show the one that was open again
+            SelectView(_view ?? ViewOriginal, false);
+
+            if (results == null)
+            {
+                MessageBox.Show($"The song lists could not be rebuilt: {failure}", title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            var lines = new List<string>();
+            foreach (var mix in results)
+            {
+                if (mix.Error != null)
+                {
+                    lines.Add($"{mix.Mix}: not rebuilt, {mix.Error}");
+                    continue;
+                }
+
+                string line = $"{mix.Mix}: {mix.Scores.Computed} chart(s) of {mix.Songs} song(s) scored, {mix.Scores.Changed} max EX score(s) new or changed";
+                if (mix.Scores.Missing > 0)
+                    line += $"; {mix.Scores.Missing} chart(s) have no chart file";
+                if (mix.Scores.Failed > 0)
+                    line += $"; {mix.Scores.Failed} chart file(s) could not be read";
+                if (mix.ReaderError != null)
+                    line += $"\n   The game's reader REJECTS the new list (error {mix.ReaderError}), use Tools › Check song lists with the game";
+
+                lines.Add(line);
+            }
+
+            bool trouble = results.Any(m => m.Error != null || m.ReaderError != null);
+            MessageBox.Show(
+                string.Join("\n", lines) + $"\n\nDone in {FormatDuration(watch.Elapsed)}. The game picks the new lists up at its next start.",
+                title,
+                MessageBoxButtons.OK,
+                trouble ? MessageBoxIcon.Warning : MessageBoxIcon.Information
+            );
         }
 
         // Runs the game's XML reader over every song list: the game's own, each enabled mix and, when

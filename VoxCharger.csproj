@@ -228,6 +228,9 @@
     <Compile Include="Sources\Forms\RenumberMixesForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Sources\Forms\RebuildMixesForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Sources\Forms\InputForm.cs">
       <SubType>Form</SubType>
     </Compile>

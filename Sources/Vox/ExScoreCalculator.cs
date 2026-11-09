@@ -24,6 +24,7 @@ namespace VoxCharger
         public static int Calculate(VoxChart chart)
         {
             var events = chart.Events;
+            var tempo  = new Tempo(events);
             int chips = 0, ticks = 0;
 
             // Auto tab rows are parsed as buttons on a track beyond FX-R; they score nothing
@@ -37,14 +38,14 @@ namespace VoxCharger
 
                 int start = events.ToTicks(button.Time);
                 int m = 0;
-                for (double t = start; t < start + button.HoldLength - 1e-6; t += Interval(events, t))
+                for (double t = start; t < start + button.HoldLength - 1e-6; t += tempo.Interval(t))
                     m++;
 
                 ticks += m - (m >= 6 ? 1 : 0) - (m >= 7 ? 1 : 0);
             }
 
             foreach (var section in Sections(events))
-                ticks += LaserTicks(events, section);
+                ticks += LaserTicks(events, tempo, section);
 
             return chips * ChipPoints + ticks * TickPoints;
         }
@@ -110,7 +111,7 @@ namespace VoxCharger
             }
         }
 
-        private static int LaserTicks(EventCollection events, Section section)
+        private static int LaserTicks(EventCollection events, Tempo tempo, Section section)
         {
             var points = section.Points;
             var slams  = section.Slams;
@@ -121,14 +122,14 @@ namespace VoxCharger
                 return count;
 
             int origin      = events.MeasureStartTick(points[0].point.Time.Measure);
-            double interval = Interval(events, first);
-            for (double t = origin + Math.Ceiling((first - origin) / interval - 1e-9) * interval; t < last - 1e-6; t += Interval(events, t))
+            double interval = tempo.Interval(first);
+            for (double t = origin + Math.Ceiling((first - origin) / interval - 1e-9) * interval; t < last - 1e-6; t += tempo.Interval(t))
             {
                 int tick = (int)Math.Round(t);
                 if (slams.Contains(tick))
                     continue;
 
-                double msPerTick = 60000.0 / BpmAt(events, t) / 48.0;
+                double msPerTick = 60000.0 / tempo.At(t) / 48.0;
                 if (slams.All(s => Math.Abs(tick - s) * msPerTick >= SlamWindowMs - 1e-9))
                     count++;
             }
@@ -136,20 +137,50 @@ namespace VoxCharger
             return count;
         }
 
-        // Judgement tick spacing in ticks (192 per whole note): a 1/16 note, a 1/8 note from 255 BPM
-        private static double Interval(EventCollection events, double tick)
+        // The BPM changes with their ticks. EventCollection.GetBpm walks every event of the chart per
+        // lookup, far too slow for one lookup per judgement tick; this gives the same answers.
+        private sealed class Tempo
         {
-            return BpmAt(events, tick) >= 255f ? 24 : 12;
-        }
+            private readonly int[] _ticks;
+            private readonly float[] _values;
+            private readonly float _first = 120f;
 
-        private static float BpmAt(EventCollection events, double tick)
-        {
-            var bpm = events.GetBpm(events.FromTicks((int)Math.Round(tick)));
-            if (bpm != null && bpm.Value > 0)
-                return bpm.Value;
+            public Tempo(EventCollection events)
+            {
+                // Collection order: like GetBpm, the last change in that order at or before a tick counts
+                var changes = events.OfType<Event.Bpm>().ToList();
+                _ticks  = changes.Select(b => events.ToTicks(b.Time)).ToArray();
+                _values = changes.Select(b => b.Value).ToArray();
 
-            var firstBpm = events.OfType<Event.Bpm>().OrderBy(b => events.ToTicks(b.Time)).FirstOrDefault();
-            return firstBpm != null && firstBpm.Value > 0 ? firstBpm.Value : 120f;
+                // Before the first change, or for a change without a usable value: the earliest BPM
+                int earliest = -1;
+                for (int i = 0; i < _ticks.Length; i++)
+                {
+                    if (earliest < 0 || _ticks[i] < _ticks[earliest])
+                        earliest = i;
+                }
+
+                if (earliest >= 0 && _values[earliest] > 0)
+                    _first = _values[earliest];
+            }
+
+            public float At(double tick)
+            {
+                int position = (int)Math.Round(tick);
+                for (int i = _ticks.Length - 1; i >= 0; i--)
+                {
+                    if (_ticks[i] <= position)
+                        return _values[i] > 0 ? _values[i] : _first;
+                }
+
+                return _first;
+            }
+
+            // Judgement tick spacing in ticks (192 per whole note): a 1/16 note, a 1/8 note from 255 BPM
+            public double Interval(double tick)
+            {
+                return At(tick) >= 255f ? 24 : 12;
+            }
         }
     }
 }

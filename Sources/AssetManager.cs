@@ -8,6 +8,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 namespace VoxCharger
@@ -676,7 +678,23 @@ namespace VoxCharger
         // Songs imported before VoxCharger wrote max_exscore get it from their charts on disk
         public static int FillMissingExScores(Action<string> status = null)
         {
-            int done = 0;
+            return UpdateExScores(true, (done, total) => status?.Invoke($"Max EX score: {done} of {total} charts..")).Computed;
+        }
+
+        public class ExScoreUpdate
+        {
+            public int Computed;   // charts read and scored
+            public int Changed;    // of those, charts whose value differs from the one they had
+            public int Missing;    // charts without a chart file
+            public int Failed;     // chart files that could not be read
+        }
+
+        // Max EX score of the loaded mix's charts from their chart files, on every core: a big mix has
+        // well over ten thousand charts. With onlyMissing, charts that carry a value keep it.
+        public static ExScoreUpdate UpdateExScores(bool onlyMissing, Action<int, int> progress = null)
+        {
+            var result = new ExScoreUpdate();
+            var jobs   = new List<(VoxLevelHeader level, string path)>();
             foreach (var header in Headers)
             {
                 if (header.Levels == null)
@@ -684,29 +702,92 @@ namespace VoxCharger
 
                 foreach (var level in header.Levels.Values)
                 {
-                    if (level.Level <= 0 || level.MaxExScore > 0)
+                    if (level.Level <= 0 || (onlyMissing && level.MaxExScore > 0))
                         continue;
 
                     string path = GetVoxPath(header, level.Difficulty);
-                    if (!File.Exists(path))
-                        continue;
-
-                    try
-                    {
-                        var chart = new VoxChart();
-                        chart.Parse(path);
-                        level.MaxExScore = ExScoreCalculator.Calculate(chart);
-                        if (++done % 50 == 0)
-                            status?.Invoke($"Max EX score of {done} charts computed..");
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"max ex score of {path}: {ex.Message}");
-                    }
+                    if (File.Exists(path))
+                        jobs.Add((level, path));
+                    else
+                        result.Missing++;
                 }
             }
 
-            return done;
+            int done = 0, changed = 0, failed = 0;
+            Parallel.ForEach(jobs, job =>
+            {
+                try
+                {
+                    var chart = new VoxChart();
+                    chart.Parse(job.path);
+
+                    int score = ExScoreCalculator.Calculate(chart);
+                    if (score != job.level.MaxExScore)
+                    {
+                        job.level.MaxExScore = score;
+                        Interlocked.Increment(ref changed);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    Debug.WriteLine($"max ex score of {job.path}: {ex.Message}");
+                }
+
+                int count = Interlocked.Increment(ref done);
+                if (count % 100 == 0 || count == jobs.Count)
+                    progress?.Invoke(count, jobs.Count);
+            });
+
+            result.Computed = done - failed;
+            result.Changed  = changed;
+            result.Failed   = failed;
+            return result;
+        }
+
+        public class MixRebuild
+        {
+            public string Mix;
+            public int Songs;
+            public ExScoreUpdate Scores;
+            public string Error;         // the mix could not be loaded or written, nothing changed
+            public string ReaderError;   // the game's reader rejects the new list
+        }
+
+        // Tools > Rebuild song lists: writes the music_db of each mix again, with the max EX score of
+        // every chart taken from its chart file. Everything else in the list is kept as it is.
+        public static List<MixRebuild> RebuildMixDbs(IList<string> mixes, Action<string, float> progress)
+        {
+            var results = new List<MixRebuild>();
+            for (int i = 0; i < mixes.Count; i++)
+            {
+                string mix   = mixes[i];
+                var rebuild  = new MixRebuild { Mix = mix };
+                float before = i * 100f / mixes.Count;
+                results.Add(rebuild);
+
+                try
+                {
+                    progress?.Invoke($"{mix}: loading..", before);
+                    LoadMix(mix);
+
+                    rebuild.Songs  = Headers.Count;
+                    rebuild.Scores = UpdateExScores(false, (done, total) =>
+                        progress?.Invoke($"{mix}: {done} of {total} charts..", before + (total == 0 ? 0f : done * 100f / total / mixes.Count)));
+
+                    progress?.Invoke($"{mix}: writing the song list..", (i + 1) * 100f / mixes.Count);
+                    Headers.Save(MdbFilename);
+
+                    if (AvsCheck.Available)
+                        rebuild.ReaderError = AvsCheck.Check(MdbFilename);
+                }
+                catch (Exception ex)
+                {
+                    rebuild.Error = ex.Message;
+                }
+            }
+
+            return results;
         }
 
         public static void ImportVox(VoxHeader header, Difficulty diff, VoxChart chart)
