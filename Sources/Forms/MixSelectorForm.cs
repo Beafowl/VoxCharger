@@ -22,9 +22,25 @@ namespace VoxCharger
                 NameTextBox.Location              = MixSelectorDropDown.Location;
                 MixSelectorDropDown.Visible       = MixSelectorDropDown.Enabled = false;
 
-                ModSelectorLabel.Text = "Enter mix name:";
+                ModSelectorLabel.Text = "Enter mix name (no spaces, the game can't read them):";
                 Size = new Size(Size.Width, CollapsedHeight);
+
+                // The name becomes the mix folder; the game doesn't read a folder with a space in its name
+                NameTextBox.KeyPress    += (s, e) => e.Handled = char.IsWhiteSpace(e.KeyChar);
+                NameTextBox.TextChanged += (s, e) => DropWhitespace();
             }
+        }
+
+        // Pasted or dropped text may bring spaces along
+        private void DropWhitespace()
+        {
+            string clean = new string(NameTextBox.Text.Where(c => !char.IsWhiteSpace(c)).ToArray());
+            if (clean == NameTextBox.Text)
+                return;
+
+            int caret = NameTextBox.SelectionStart - (NameTextBox.Text.Length - clean.Length);
+            NameTextBox.Text = clean;
+            NameTextBox.SelectionStart = Math.Max(0, Math.Min(clean.Length, caret));
         }
 
         private void OnModSelectorFormLoad(object sender, EventArgs e)
@@ -48,22 +64,23 @@ namespace VoxCharger
         {
             if (MixSelectorDropDown.SelectedIndex == 0)
             {
-                if (string.IsNullOrEmpty(NameTextBox.Text))
+                string problem = AssetManager.MixNameProblem(NameTextBox.Text);
+                if (problem != null)
                 {
                     MessageBox.Show(
-                        "Mix name cannot be empty",
-                        "Error",
+                        problem,
+                        "Mix name",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning
                     );
 
                     return;
                 }
-                else if (AssetManager.GetMixes().Contains(NameTextBox.Text, StringComparer.OrdinalIgnoreCase) || NameTextBox.Text.ToLower() == "original")
+                else if (AssetManager.GetMixes().Contains(NameTextBox.Text, StringComparer.OrdinalIgnoreCase))
                 {
                     MessageBox.Show(
-                        "Mix name is already exists",
-                        "Error",
+                        "A mix with this name already exists.",
+                        "Mix name",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning
                     );

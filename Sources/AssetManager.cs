@@ -512,6 +512,102 @@ namespace VoxCharger
             return _mixList.ToArray();
         }
 
+        // Why a name can't be used for a mix folder, null when it can. The game doesn't read a mix
+        // whose folder name contains a space (the mix is simply absent from it), Windows refuses some
+        // characters, and _cache is layeredfs's own folder.
+        public static string MixNameProblem(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return "Enter a name for the mix.";
+            if (name.Any(char.IsWhiteSpace))
+                return "The game can't read a mix whose folder name contains a space. Use _ or - instead.";
+
+            var invalid = Path.GetInvalidFileNameChars();
+            foreach (char c in name)
+            {
+                if (invalid.Contains(c))
+                    return $"The name can't contain {c}";
+            }
+
+            if (name.EndsWith("."))
+                return "The name can't end with a dot.";
+            if (name == "_cache")
+                return "_cache is the game's own folder.";
+            if (name.Equals("original", StringComparison.OrdinalIgnoreCase))
+                return "\"original\" stands for the game's own songs.";
+
+            return null;
+        }
+
+        // Mixes, enabled or disabled, whose folder name the game can't read
+        public static List<string> MixesWithBadNames()
+        {
+            return GetMixes().Concat(GetDisabledMixes())
+                .Where(mix => MixNameProblem(mix) != null)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(mix => mix, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        // A usable folder name for a mix: whitespace becomes _, forbidden characters go, and a name
+        // another mix already has gets a number
+        public static string SuggestMixName(string name)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder();
+            foreach (char c in name.Trim())
+            {
+                if (char.IsWhiteSpace(c))
+                {
+                    if (sb.Length > 0 && sb[sb.Length - 1] != '_')
+                        sb.Append('_');
+                }
+                else if (!invalid.Contains(c))
+                    sb.Append(c);
+            }
+
+            string clean = sb.ToString().TrimEnd('.', '_');
+            if (string.IsNullOrEmpty(clean) || MixNameProblem(clean) != null)
+                clean = "mix";
+
+            var taken = new HashSet<string>(GetMixes().Concat(GetDisabledMixes()), StringComparer.OrdinalIgnoreCase);
+            string candidate = clean;
+            for (int n = 2; taken.Contains(candidate); n++)
+                candidate = $"{clean}_{n}";
+
+            return candidate;
+        }
+
+        // Renames a mix folder, enabled or disabled. Nothing inside the folder refers to its name.
+        public static void RenameMix(string oldName, string newName)
+        {
+            string problem = MixNameProblem(newName);
+            if (problem != null)
+                throw new ArgumentException(problem);
+
+            string enabled = Path.Combine(GamePath, "data_mods", oldName);
+            string root    = Directory.Exists(enabled) ? Path.Combine(GamePath, "data_mods") : DisabledMixesPath;
+            string from    = Path.Combine(root, oldName);
+            string to      = Path.Combine(root, newName);
+
+            if (!Directory.Exists(from))
+                throw new DirectoryNotFoundException($"The mix \"{oldName}\" was not found in {root}");
+            if (Directory.Exists(to))
+                throw new IOException($"A folder named \"{newName}\" already exists in {Path.GetFileName(root)}");
+
+            try
+            {
+                Directory.Move(from, to);
+            }
+            catch (IOException ex)
+            {
+                throw new IOException($"The mix folder could not be renamed, is the game running?\n{ex.Message}", ex);
+            }
+
+            if (_mixList.Remove(oldName))
+                _mixList.Add(newName);
+        }
+
         // Directory left behind by an interrupted CreateMix: no music db and no files at all,
         // only (possibly) the empty folder skeleton. Safe to reuse for a new mix.
         private static bool IsMixSkeleton(string mixPath)

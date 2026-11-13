@@ -506,7 +506,62 @@ namespace VoxCharger
                 view = mixes.OrderBy(m => m, StringComparer.OrdinalIgnoreCase).FirstOrDefault() ?? ViewOriginal;
 
             SelectView(view, false);
+            BeginInvoke(new Action(CheckMixNames));
             return true;
+        }
+
+        // The game doesn't read a mix whose folder name contains a space: such a mix is simply missing
+        // from it. Runs once the window shows a freshly opened game folder and offers to rename the folders.
+        private void CheckMixNames()
+        {
+            var bad = AssetManager.MixesWithBadNames();
+            if (bad.Count == 0)
+                return;
+
+            var plan = new List<(string from, string to)>();
+            foreach (string mix in bad)
+            {
+                string to = AssetManager.SuggestMixName(mix);
+                while (plan.Any(p => p.to.Equals(to, StringComparison.OrdinalIgnoreCase)))
+                    to = AssetManager.SuggestMixName(to + " 2");
+                plan.Add((mix, to));
+            }
+
+            string list = string.Join("\n", plan.Select(p => $"- {p.from}  ->  {p.to}"));
+            var answer = MessageBox.Show(
+                $"The game can't read a mix whose folder name contains a space or another character a folder name can't have, " +
+                $"so {(bad.Count == 1 ? "this mix is" : "these mixes are")} missing from it:\n\n{list}\n\n" +
+                "Rename the folders now? Nothing else changes; the game picks the mixes up at its next start.",
+                "Mix names",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning
+            );
+
+            if (answer != DialogResult.Yes)
+                return;
+
+            var errors = new List<string>();
+            string viewAfter = _view;
+            foreach (var (from, to) in plan)
+            {
+                try
+                {
+                    AssetManager.RenameMix(from, to);
+                    if (from == _view)
+                        viewAfter = to;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{from}: {ex.Message}");
+                }
+            }
+
+            AssetManager.Initialize(AssetManager.GamePath);
+            if (viewAfter != _view)
+                SelectView(viewAfter, false);   // the open mix moved with its folder
+
+            if (errors.Count > 0)
+                MessageBox.Show($"Not every mix could be renamed:\n\n{string.Join("\n", errors)}", "Mix names", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         // Switches the song list to a mix or the game's own songs
