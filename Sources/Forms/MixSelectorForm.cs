@@ -10,6 +10,9 @@ namespace VoxCharger
         public int ExpandedHeight  = 165;
         public int CollapsedHeight = 140;
 
+        // Shown at the name box when a space is typed or pasted
+        private readonly ToolTip _hint = new ToolTip { UseAnimation = false, UseFading = false };
+
         public MixSelectorForm(bool createMode = false)
         {
             InitializeComponent();
@@ -22,13 +25,28 @@ namespace VoxCharger
                 NameTextBox.Location              = MixSelectorDropDown.Location;
                 MixSelectorDropDown.Visible       = MixSelectorDropDown.Enabled = false;
 
-                ModSelectorLabel.Text = "Enter mix name (no spaces, the game can't read them):";
+                ModSelectorLabel.Text = "Enter mix name:";
                 Size = new Size(Size.Width, CollapsedHeight);
 
                 // The name becomes the mix folder; the game doesn't read a folder with a space in its name
-                NameTextBox.KeyPress    += (s, e) => e.Handled = char.IsWhiteSpace(e.KeyChar);
+                NameTextBox.KeyPress += (s, e) =>
+                {
+                    if (char.IsWhiteSpace(e.KeyChar))
+                    {
+                        e.Handled = true;
+                        ShowSpaceHint();
+                    }
+                    else
+                        _hint.Hide(NameTextBox);
+                };
                 NameTextBox.TextChanged += (s, e) => DropWhitespace();
+                Disposed += (s, e) => _hint.Dispose();
             }
+        }
+
+        private void ShowSpaceHint()
+        {
+            _hint.Show("The game can't read a mix whose folder name contains a space. Use _ or - instead.", NameTextBox, 0, NameTextBox.Height + 2, 3000);
         }
 
         // Pasted or dropped text may bring spaces along
@@ -41,6 +59,7 @@ namespace VoxCharger
             int caret = NameTextBox.SelectionStart - (NameTextBox.Text.Length - clean.Length);
             NameTextBox.Text = clean;
             NameTextBox.SelectionStart = Math.Max(0, Math.Min(clean.Length, caret));
+            ShowSpaceHint();
         }
 
         private void OnModSelectorFormLoad(object sender, EventArgs e)
