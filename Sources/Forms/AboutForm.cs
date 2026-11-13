@@ -8,6 +8,10 @@ namespace VoxCharger
         public AboutForm()
         {
             InitializeComponent();
+
+            // The version comes from AssemblyInfo, so the label can't go stale
+            var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            label2.Text = $"Version {version.Major}.{version.Minor}.{version.Build}";
             Theme.Attach(this);
 
             // The dialog is dark, so both the title bar icon and the big picture use the white logo
